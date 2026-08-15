@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import logging
 import sqlite3
 import requests
@@ -15,10 +14,7 @@ if not TOKEN:
 ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
 
 # ===== БАЗОВЫЙ URL API MAX =====
-# Попробуйте один из вариантов:
-# API_BASE = "https://api.max.ru/v1"
-# API_BASE = "https://api.max.ru"
-API_BASE = "https://api.max.ru"  # если не знаете точный, оставьте так
+API_BASE = "https://platform-api2.max.ru"
 
 # ===== ЛОГИРОВАНИЕ =====
 logging.basicConfig(level=logging.INFO)
@@ -132,15 +128,19 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (HTTP) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (НОВОЕ API) =====
 def send_message(chat_id, text):
-    url = f"{API_BASE}/bot{TOKEN}/sendMessage"
+    url = f"{API_BASE}/messages"
+    headers = {
+        'Authorization': f'Bearer {TOKEN}',
+        'Content-Type': 'application/json'
+    }
     payload = {
-        'chat_id': chat_id,
+        'chatId': str(chat_id),
         'text': text
     }
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
         if response.status_code == 200:
             return response.json()
         else:
@@ -150,15 +150,24 @@ def send_message(chat_id, text):
         logging.error(f"Исключение при отправке: {e}")
         return None
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (HTTP) =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (LONG POLLING) =====
 def get_updates(offset=None):
-    url = f"{API_BASE}/bot{TOKEN}/getUpdates"
-    params = {'offset': offset} if offset else {}
+    url = f"{API_BASE}/messages"
+    headers = {
+        'Authorization': f'Bearer {TOKEN}'
+    }
+    params = {}
+    if offset:
+        params['offset'] = offset
+    # Добавляем timeout для long polling (максимум 30 секунд)
+    params['timeout'] = 30
+    params['limit'] = 10
     try:
-        response = requests.get(url, params=params, timeout=30)
+        response = requests.get(url, headers=headers, params=params, timeout=35)
         if response.status_code == 200:
             data = response.json()
-            return data.get('result', [])
+            # Ожидаем, что API вернёт список сообщений
+            return data.get('messages', [])
         else:
             logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
             return []
@@ -181,6 +190,8 @@ def notify_admins(app_id, data, user_id):
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(message):
+    # В новом API сообщения могут иметь другую структуру
+    # Предполагаем, что message содержит поля: id, from, chat, text, date
     user_id = str(message.get('from', {}).get('id', ''))
     chat_id = message.get('chat', {}).get('id', '')
     text = message.get('text', '')
@@ -188,7 +199,6 @@ def handle_message(message):
     if not text:
         return
 
-    # === ОБРАБОТКА КОМАНД ===
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -302,7 +312,6 @@ def handle_message(message):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # === ЕСЛИ НЕ КОМАНДА — ОБРАБОТКА СОСТОЯНИЙ ===
     state = get_user_state(user_id)
     if state is None:
         return
@@ -352,9 +361,12 @@ def main():
         try:
             updates = get_updates(offset=last_update_id + 1)
             for update in updates:
-                last_update_id = update.get('update_id', 0)
-                if 'message' in update:
-                    handle_message(update['message'])
+                # В новом API каждое обновление может иметь поле 'message'
+                msg = update.get('message')
+                if msg:
+                    # Обновляем last_update_id – в новом API у каждого сообщения есть свой id
+                    last_update_id = update.get('update_id', 0)
+                    handle_message(msg)
         except Exception as e:
             logging.error(f"Ошибка в цикле: {e}")
         time.sleep(1)
