@@ -147,27 +147,66 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (С ПЕРЕБОРОМ СПОСОБОВ) =====
 def send_message(chat_id, text):
-    """Отправляет сообщение в указанный чат (chat_id должен быть корректным)"""
-    url = f"{API_BASE}/messages"
-    headers = AUTH_HEADERS.copy()
-    headers['Content-Type'] = 'application/json'
-    payload = {
-        'chatId': str(chat_id),   # chat_id – это recipient.chat_id из входящего сообщения
+    """Отправляет сообщение, перебирая возможные эндпоинты и форматы"""
+    # Вариант 1: POST /messages с JSON (основной)
+    url1 = f"{API_BASE}/messages"
+    headers1 = AUTH_HEADERS.copy()
+    headers1['Content-Type'] = 'application/json'
+    payload1 = {
+        'chatId': str(chat_id),
         'text': text
     }
-    logging.info(f"📤 Отправка в чат {chat_id}: {text[:50]}...")
+    logging.info(f"📤 Попытка 1: POST {url1} с payload={payload1}")
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-        if response.status_code == 200:
-            return response.json()
+        resp1 = requests.post(url1, json=payload1, headers=headers1, timeout=10, verify=False)
+        if resp1.status_code == 200:
+            logging.info("✅ Успешно отправлено через /messages")
+            return resp1.json()
         else:
-            logging.error(f"❌ Ошибка отправки (chat_id={chat_id}): {response.status_code} - {response.text}")
-            return None
+            logging.warning(f"❌ /messages вернул {resp1.status_code}: {resp1.text}")
     except Exception as e:
-        logging.error(f"❌ Исключение при отправке: {e}")
-        return None
+        logging.error(f"Ошибка при /messages: {e}")
+
+    # Вариант 2: POST /sendMessage с form-data (как в Telegram)
+    url2 = f"{API_BASE}/sendMessage"
+    headers2 = AUTH_HEADERS.copy()
+    headers2['Content-Type'] = 'application/x-www-form-urlencoded'
+    payload2 = {
+        'chat_id': str(chat_id),
+        'text': text
+    }
+    logging.info(f"📤 Попытка 2: POST {url2} с data={payload2}")
+    try:
+        resp2 = requests.post(url2, data=payload2, headers=headers2, timeout=10, verify=False)
+        if resp2.status_code == 200:
+            logging.info("✅ Успешно отправлено через /sendMessage (POST)")
+            return resp2.json()
+        else:
+            logging.warning(f"❌ /sendMessage POST вернул {resp2.status_code}: {resp2.text}")
+    except Exception as e:
+        logging.error(f"Ошибка при /sendMessage POST: {e}")
+
+    # Вариант 3: GET /sendMessage (как в Telegram)
+    url3 = f"{API_BASE}/sendMessage"
+    params3 = {
+        'chat_id': str(chat_id),
+        'text': text
+    }
+    logging.info(f"📤 Попытка 3: GET {url3} с params={params3}")
+    try:
+        resp3 = requests.get(url3, params=params3, headers=AUTH_HEADERS, timeout=10, verify=False)
+        if resp3.status_code == 200:
+            logging.info("✅ Успешно отправлено через GET /sendMessage")
+            return resp3.json()
+        else:
+            logging.warning(f"❌ GET /sendMessage вернул {resp3.status_code}: {resp3.text}")
+    except Exception as e:
+        logging.error(f"Ошибка при GET /sendMessage: {e}")
+
+    logging.error("❌ Все способы отправки не удались.")
+    return None
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
@@ -198,22 +237,16 @@ def notify_admins(app_id, data, user_id):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
-        # Для администратора используем его ID как chatId (если это не работает, нужно заменить на chat_id диалога)
-        # Но мы не знаем chat_id администратора. Попробуем использовать user_id.
         send_message(admin_id, text)
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
-    # Извлекаем сообщение
     message = update.get('message', {})
     if not message:
         return
 
-    # Получаем recipient.chat_id – это правильный идентификатор для ответа
     recipient = message.get('recipient', {})
-    chat_id = str(recipient.get('chat_id', ''))
-
-    # Получаем ID отправителя (для проверки прав администратора)
+    chat_id = str(recipient.get('chat_id', ''))  # используем chat_id из получателя
     sender = message.get('sender', {})
     user_id = str(sender.get('user_id', ''))
 
@@ -229,7 +262,6 @@ def handle_message(update):
 
     logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
 
-    # Обработка команд
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -296,7 +328,6 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            # Уведомляем пользователя
             try:
                 send_message(str(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
@@ -344,7 +375,6 @@ def handle_message(update):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # Обработка состояний опроса
     state = get_user_state(user_id)
     if state is None:
         return
@@ -396,7 +426,6 @@ def main():
             for update in updates:
                 if update.get('update_type') != 'message_created':
                     continue
-                # Передаём весь update, чтобы внутри извлечь chat_id
                 handle_message(update)
                 if 'marker' in update:
                     last_marker = update['marker']
