@@ -6,20 +6,19 @@ import requests
 import urllib3
 from datetime import datetime
 
-# Отключаем SSL-предупреждения
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ Токен не найден! Установите BOT_TOKEN или MAX_BOT_TOKEN")
-logging.info(f"🔑 Токен (первые 4 символа): {TOKEN[:4]}... (длина {len(TOKEN)})")
+logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
 # ===== БАЗОВЫЙ URL =====
 API_BASE = "https://platform-api2.max.ru"
 
-# ===== ID АДМИНИСТРАТОРА =====
-ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
+# ===== ID АДМИНИСТРАТОРА (замените на свой) =====
+ADMIN_IDS = [123456789]  # ⚠️ Замените на реальный ID из /id
 
 # ===== ЛОГИРОВАНИЕ =====
 logging.basicConfig(level=logging.INFO)
@@ -27,21 +26,18 @@ logging.basicConfig(level=logging.INFO)
 # ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
 def check_auth():
     url = f"{API_BASE}/me"
-    headers_list = [
-        {'Authorization': TOKEN},
-        {'Authorization': f'Bearer {TOKEN}'},
-        {'X-API-Key': TOKEN},
-    ]
-    for headers in headers_list:
-        try:
-            resp = requests.get(url, headers=headers, timeout=5, verify=False)
-            if resp.status_code == 200:
-                logging.info(f"✅ Авторизация успешна! Используется: {list(headers.keys())[0]}")
-                return headers
-        except:
-            pass
-    logging.error("❌ Все попытки авторизации не удались. Проверьте токен.")
-    return None
+    headers = {'Authorization': TOKEN}
+    try:
+        resp = requests.get(url, headers=headers, timeout=5, verify=False)
+        if resp.status_code == 200:
+            logging.info("✅ Авторизация успешна!")
+            return headers
+        else:
+            logging.error(f"❌ Ошибка авторизации: {resp.status_code} - {resp.text}")
+            return None
+    except Exception as e:
+        logging.error(f"❌ Ошибка подключения: {e}")
+        return None
 
 AUTH_HEADERS = check_auth()
 if not AUTH_HEADERS:
@@ -165,15 +161,16 @@ def send_message(chat_id, text):
         'chatId': str(chat_id),
         'text': text
     }
+    logging.info(f"📤 Отправка пользователю {chat_id}: {text[:50]}...")
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
             return response.json()
         else:
-            logging.error(f"Ошибка отправки (chat_id={chat_id}): {response.status_code} - {response.text}")
+            logging.error(f"❌ Ошибка отправки (chat_id={chat_id}): {response.status_code} - {response.text}")
             return None
     except Exception as e:
-        logging.error(f"Исключение при отправке: {e}")
+        logging.error(f"❌ Исключение при отправке: {e}")
         return None
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
@@ -186,13 +183,15 @@ def get_updates(offset=None):
         response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
-            # В ответе от /updates есть поле 'updates', а не 'messages'
-            return data.get('updates', [])
+            updates = data.get('updates', [])
+            # Сохраняем marker для следующего запроса (если нужно)
+            # Но мы используем offset, поэтому просто возвращаем updates
+            return updates
         else:
-            logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
+            logging.error(f"❌ Ошибка получения обновлений: {response.status_code} - {response.text}")
             return []
     except Exception as e:
-        logging.error(f"Исключение при получении: {e}")
+        logging.error(f"❌ Исключение при получении: {e}")
         return []
 
 # ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
@@ -209,27 +208,26 @@ def notify_admins(app_id, data, user_id):
         send_message(admin_id, text)
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
-def handle_message(update):
-    """
-    Обрабатывает одно обновление (update) из списка, полученного от /updates.
-    Обновление может содержать ключ 'message' (новое сообщение) или 'message_id' (удаление).
-    Мы обрабатываем только события с типом 'message_created'.
-    """
-    # Проверяем, что это новое сообщение
-    if update.get('update_type') != 'message_created':
-        return
-    message = update.get('message')
-    if not message:
+def handle_message(message):
+    # Извлекаем ID отправителя
+    sender = message.get('sender', {})
+    user_id = str(sender.get('user_id', ''))
+    if not user_id:
+        logging.warning("Нет sender.user_id в сообщении")
         return
 
-    user_id = str(message.get('sender', {}).get('user_id', ''))
-    chat_id = user_id  # Используем ID отправителя как получателя для ответа
-    text = message.get('body', {}).get('text', '')
+    # Для ответа используем user_id как chat_id
+    chat_id = user_id
+
+    # Извлекаем текст
+    body = message.get('body', {})
+    text = body.get('text', '')
 
     if not text:
         return
 
-    # === ОБРАБОТКА КОМАНД ===
+    logging.info(f"📩 Получено сообщение от {user_id}: {text[:50]}")
+
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -343,7 +341,6 @@ def handle_message(update):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # === ЕСЛИ НЕ КОМАНДА — ОБРАБОТКА СОСТОЯНИЙ ===
     state = get_user_state(user_id)
     if state is None:
         return
@@ -387,19 +384,26 @@ def handle_message(update):
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def main():
     logging.info("🚀 Бот запущен...")
-    last_update_id = 0
+    last_marker = 0  # используем marker вместо offset
 
     while True:
         try:
-            updates = get_updates(offset=last_update_id + 1)
+            updates = get_updates(offset=last_marker + 1)
             for update in updates:
-                # Если у обновления есть поле 'update_id', используем его для смещения
-                if 'update_id' in update:
-                    last_update_id = update['update_id']
-                # Обрабатываем обновление
-                handle_message(update)
+                # Проверяем тип обновления
+                if update.get('update_type') != 'message_created':
+                    continue
+                message = update.get('message')
+                if message:
+                    handle_message(message)
+                    # Сохраняем marker после обработки
+                    if 'marker' in update:
+                        last_marker = update['marker']
+                    else:
+                        # Если нет marker, используем timestamp или увеличиваем
+                        last_marker += 1
         except Exception as e:
-            logging.error(f"Ошибка в цикле: {e}")
+            logging.error(f"❌ Ошибка в цикле: {e}")
         time.sleep(1)
 
 if __name__ == "__main__":
