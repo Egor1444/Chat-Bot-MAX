@@ -6,26 +6,48 @@ import requests
 import urllib3
 from datetime import datetime
 
-# Отключаем предупреждения SSL
+# Отключаем SSL-предупреждения (для отладки)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ Токен не найден! Установите BOT_TOKEN или MAX_BOT_TOKEN")
-
-# Маскируем токен для логов (показываем только первые 4 и последние 4 символа)
-masked_token = TOKEN[:4] + "..." + TOKEN[-4:] if len(TOKEN) > 8 else "***"
-logging.info(f"Токен: {masked_token}")
-
-# ===== ID АДМИНИСТРАТОРА =====
-ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
+logging.info(f"🔑 Токен (первые 4 символа): {TOKEN[:4]}... (длина {len(TOKEN)})")
 
 # ===== БАЗОВЫЙ URL API MAX =====
 API_BASE = "https://platform-api2.max.ru"
 
+# ===== ID АДМИНИСТРАТОРА =====
+ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
+
 # ===== ЛОГИРОВАНИЕ =====
 logging.basicConfig(level=logging.INFO)
+
+# ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
+def check_auth():
+    url = f"{API_BASE}/me"
+    headers_list = [
+        {'Authorization': TOKEN},
+        {'Authorization': f'Bearer {TOKEN}'},
+        {'X-API-Key': TOKEN},
+    ]
+    for headers in headers_list:
+        try:
+            resp = requests.get(url, headers=headers, timeout=5, verify=False)
+            if resp.status_code == 200:
+                logging.info(f"✅ Авторизация успешна! Используется: {list(headers.keys())[0]}")
+                return headers
+            else:
+                logging.debug(f"Попытка с {headers} -> {resp.status_code}")
+        except Exception as e:
+            logging.debug(f"Ошибка с {headers}: {e}")
+    logging.error("❌ Все попытки авторизации не удались. Проверьте токен.")
+    return None
+
+AUTH_HEADERS = check_auth()
+if not AUTH_HEADERS:
+    raise RuntimeError("Не удалось авторизоваться. Проверьте токен.")
 
 # ===== БАЗА ДАННЫХ =====
 DB_PATH = "news.db"
@@ -139,10 +161,8 @@ TOTAL_QUESTIONS = len(QUESTIONS)
 # ===== ОТПРАВКА СООБЩЕНИЙ =====
 def send_message(chat_id, text):
     url = f"{API_BASE}/messages"
-    headers = {
-        'Authorization': TOKEN,  # Без Bearer!
-        'Content-Type': 'application/json'
-    }
+    headers = AUTH_HEADERS.copy()
+    headers['Content-Type'] = 'application/json'
     payload = {
         'chatId': str(chat_id),
         'text': text
@@ -161,14 +181,11 @@ def send_message(chat_id, text):
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
     url = f"{API_BASE}/messages"
-    headers = {
-        'Authorization': TOKEN  # Без Bearer!
-    }
     params = {'timeout': 30, 'limit': 10}
     if offset:
         params['offset'] = offset
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=35, verify=False)
+        response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
             return data.get('messages', [])
