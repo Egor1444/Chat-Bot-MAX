@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import json
 import logging
@@ -15,9 +14,11 @@ if not TOKEN:
 # ===== ID АДМИНИСТРАТОРА =====
 ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
 
-# ===== НАСТРОЙКИ API MAX =====
-# Если известен базовый URL – укажите, иначе оставьте как есть
-API_BASE = "https://api.max.ru/v1"  # возможно, другой адрес
+# ===== БАЗОВЫЙ URL API MAX =====
+# Попробуйте один из вариантов:
+# API_BASE = "https://api.max.ru/v1"
+# API_BASE = "https://api.max.ru"
+API_BASE = "https://api.max.ru"  # если не знаете точный, оставьте так
 
 # ===== ЛОГИРОВАНИЕ =====
 logging.basicConfig(level=logging.INFO)
@@ -131,9 +132,8 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (HTTP) =====
 def send_message(chat_id, text):
-    """Отправляет сообщение через API MAX"""
     url = f"{API_BASE}/bot{TOKEN}/sendMessage"
     payload = {
         'chat_id': chat_id,
@@ -141,13 +141,30 @@ def send_message(chat_id, text):
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logging.error(f"Ошибка отправки: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        logging.error(f"Ошибка отправки сообщения: {e}")
+        logging.error(f"Исключение при отправке: {e}")
         return None
 
-def send_message_to_admin(admin_id, text):
-    return send_message(admin_id, text)
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (HTTP) =====
+def get_updates(offset=None):
+    url = f"{API_BASE}/bot{TOKEN}/getUpdates"
+    params = {'offset': offset} if offset else {}
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('result', [])
+        else:
+            logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
+            return []
+    except Exception as e:
+        logging.error(f"Исключение при получении: {e}")
+        return []
 
 # ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
 def notify_admins(app_id, data, user_id):
@@ -238,7 +255,6 @@ def handle_message(message):
                 return
             update_status(app_id, 'approved', feedback)
             send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            # уведомление пользователю
             try:
                 send_message(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
@@ -326,17 +342,6 @@ def handle_message(message):
                 "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
             )
             send_message(chat_id, summary)
-
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
-def get_updates(offset=None):
-    url = f"{API_BASE}/bot{TOKEN}/getUpdates"
-    params = {'offset': offset} if offset else {}
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        return response.json().get('result', [])
-    except Exception as e:
-        logging.error(f"Ошибка получения обновлений: {e}")
-        return []
 
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def main():
