@@ -17,144 +17,37 @@ if not TOKEN:
 logging.basicConfig(level=logging.INFO)
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
-# ===== БАЗОВЫЕ URL =====
-API_BASES = [
-    "https://platform-api2.max.ru",
-    "https://api.max.ru",
-]
+# ===== РАБОЧИЙ БАЗОВЫЙ URL И СПОСОБ ОТПРАВКИ =====
+API_BASE = "https://platform-api2.max.ru"
+
+# Найденный рабочий способ:
+WORKING_METHOD = "GET"
+WORKING_ENDPOINT = "/messages"
+WORKING_FIELD = "chat_id"
+WORKING_DATA_TYPE = "params"
+WORKING_CHAT_ID = 2712418  # recipient.chat_id (из логов)
 
 # ===== ID АДМИНИСТРАТОРА =====
-ADMIN_IDS = [364551480]  # Ваш user_id из логов
+ADMIN_IDS = [364551480]  # Ваш user_id из логов (sender.user_id)
 
-# ===== АВТОРИЗАЦИЯ =====
+# ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
 def check_auth():
-    for base in API_BASES:
-        url = f"{base}/me"
-        headers = {'Authorization': TOKEN}
-        try:
-            resp = requests.get(url, headers=headers, timeout=5, verify=False)
-            if resp.status_code == 200:
-                logging.info(f"✅ Авторизация успешна на {base}")
-                return base
-        except:
-            pass
-    return None
-
-ACTIVE_BASE = check_auth()
-if not ACTIVE_BASE:
-    raise RuntimeError("❌ Не удалось авторизоваться. Проверьте токен.")
-logging.info(f"Используется базовый URL: {ACTIVE_BASE}")
-
-# ===== ПОИСК РАБОЧЕГО СПОСОБА ОТПРАВКИ =====
-POSSIBLE_IDS = [2712418, 364551480]  # из логов
-WORKING_CHAT_ID = None
-WORKING_METHOD = None
-WORKING_ENDPOINT = None
-WORKING_FIELD = None
-WORKING_DATA_TYPE = None
-
-def test_send(chat_id, endpoint, method, field, data_type, base_url):
-    """
-    Пытается отправить тестовое сообщение.
-    data_type: 'json', 'form', 'params'
-    """
-    # Формируем полный URL
-    if endpoint.startswith('/bot'):
-        url = f"{base_url}{endpoint}"  # например /bot{TOKEN}/sendMessage
-    else:
-        url = f"{base_url}{endpoint}"
-    
+    url = f"{API_BASE}/me"
     headers = {'Authorization': TOKEN}
-    
-    # Формируем payload в зависимости от field
-    if field == "chatId":
-        payload = {"chatId": str(chat_id), "text": "Test"}
-    elif field == "chat_id":
-        payload = {"chat_id": str(chat_id), "text": "Test"}
-    elif field == "recipient":
-        payload = {"recipient": {"chat_id": str(chat_id)}, "text": "Test"}
-    elif field == "user_id":
-        payload = {"user_id": str(chat_id), "text": "Test"}
-    elif field == "peer_id":
-        payload = {"peer_id": str(chat_id), "text": "Test"}
-    else:
-        return False
-
     try:
-        if method == "GET":
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-            resp = requests.get(url, params=payload, headers=headers, timeout=10, verify=False)
-        else:  # POST
-            if data_type == "json":
-                headers['Content-Type'] = 'application/json'
-                resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-            elif data_type == "form":
-                headers['Content-Type'] = 'application/x-www-form-urlencoded'
-                resp = requests.post(url, data=payload, headers=headers, timeout=10, verify=False)
-            else:
-                return False
+        resp = requests.get(url, headers=headers, timeout=5, verify=False)
         if resp.status_code == 200:
-            logging.info(f"✅ РАБОТАЕТ: {method} {endpoint} field={field} data_type={data_type} chat_id={chat_id}")
+            logging.info("✅ Авторизация успешна!")
             return True
         else:
-            logging.debug(f"❌ {method} {endpoint} {field} {data_type} -> {resp.status_code} {resp.text[:80]}")
+            logging.error(f"❌ Ошибка авторизации: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
-        logging.debug(f"⚠️ {method} {endpoint} {field} {data_type} -> ошибка: {e}")
+        logging.error(f"❌ Ошибка подключения: {e}")
         return False
 
-# Перебираем все варианты
-logging.info("🔎 Поиск рабочего способа отправки сообщений...")
-endpoints = [
-    "/messages",
-    "/sendMessage",
-    "/send",
-    "/message",
-    f"/bot{TOKEN}/sendMessage"  # как в Telegram
-]
-methods = ["POST", "GET"]
-fields = ["chatId", "chat_id", "recipient", "user_id", "peer_id"]
-data_types = ["json", "form"]  # для POST
-base_urls = [ACTIVE_BASE, "https://api.max.ru"]  # пробуем оба
-
-for base in base_urls:
-    for endpoint in endpoints:
-        for method in methods:
-            for field in fields:
-                for chat_id in POSSIBLE_IDS:
-                    if method == "GET":
-                        # GET использует только params, data_type игнорируем
-                        if test_send(chat_id, endpoint, method, field, "params", base):
-                            WORKING_CHAT_ID = chat_id
-                            WORKING_METHOD = method
-                            WORKING_ENDPOINT = endpoint
-                            WORKING_FIELD = field
-                            WORKING_DATA_TYPE = "params"
-                            break
-                    else:  # POST
-                        for dt in data_types:
-                            if test_send(chat_id, endpoint, method, field, dt, base):
-                                WORKING_CHAT_ID = chat_id
-                                WORKING_METHOD = method
-                                WORKING_ENDPOINT = endpoint
-                                WORKING_FIELD = field
-                                WORKING_DATA_TYPE = dt
-                                break
-                        if WORKING_CHAT_ID is not None:
-                            break
-                if WORKING_CHAT_ID is not None:
-                    break
-            if WORKING_CHAT_ID is not None:
-                break
-        if WORKING_CHAT_ID is not None:
-            break
-    if WORKING_CHAT_ID is not None:
-        break
-
-if WORKING_CHAT_ID is None:
-    raise RuntimeError("❌ Не удалось найти рабочий способ отправки. Проверьте токен и права бота.")
-
-logging.info(f"🎯 Найденный способ: {WORKING_METHOD} {WORKING_ENDPOINT} field={WORKING_FIELD} data_type={WORKING_DATA_TYPE} chat_id={WORKING_CHAT_ID}")
+if not check_auth():
+    raise RuntimeError("❌ Не удалось авторизоваться. Проверьте токен.")
 
 # ===== БАЗА ДАННЫХ =====
 DB_PATH = "news.db"
@@ -265,57 +158,24 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (с использованием найденных параметров) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (использует найденный рабочий способ) =====
 def send_message(recipient_id, text):
     """
-    Отправляет сообщение, используя найденный рабочий способ.
+    Отправляет сообщение через GET /messages?chat_id=...&text=...
     """
-    # Если рабочий способ не найден, используем базовый вариант
-    if WORKING_CHAT_ID is None:
-        logging.error("❌ Рабочий способ не найден, отправка невозможна.")
-        return False
-
-    # Определяем базовый URL
-    base_url = ACTIVE_BASE if ACTIVE_BASE else "https://platform-api2.max.ru"
-    
-    # Формируем URL в зависимости от эндпоинта
-    if WORKING_ENDPOINT.startswith('/bot'):
-        url = f"{base_url}{WORKING_ENDPOINT}"
-    else:
-        url = f"{base_url}{WORKING_ENDPOINT}"
-    
+    url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
-    
-    # Формируем payload в зависимости от поля
-    if WORKING_FIELD == "chatId":
-        payload = {"chatId": str(recipient_id), "text": text}
-    elif WORKING_FIELD == "chat_id":
-        payload = {"chat_id": str(recipient_id), "text": text}
-    elif WORKING_FIELD == "recipient":
-        payload = {"recipient": {"chat_id": str(recipient_id)}, "text": text}
-    elif WORKING_FIELD == "user_id":
-        payload = {"user_id": str(recipient_id), "text": text}
-    elif WORKING_FIELD == "peer_id":
-        payload = {"peer_id": str(recipient_id), "text": text}
-    else:
-        payload = {"chatId": str(recipient_id), "text": text}
-
+    params = {
+        'chat_id': str(recipient_id),
+        'text': text
+    }
     try:
-        if WORKING_METHOD == "GET":
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-            resp = requests.get(url, params=payload, headers=headers, timeout=10, verify=False)
-        else:  # POST
-            if WORKING_DATA_TYPE == "json":
-                headers['Content-Type'] = 'application/json'
-                resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-            else:  # form
-                headers['Content-Type'] = 'application/x-www-form-urlencoded'
-                resp = requests.post(url, data=payload, headers=headers, timeout=10, verify=False)
+        resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
         if resp.status_code == 200:
-            logging.info(f"✅ Сообщение успешно отправлено в чат {recipient_id}")
+            logging.info(f"✅ Сообщение отправлено в чат {recipient_id}")
             return True
         else:
-            logging.error(f"❌ Ошибка отправки (chat_id={recipient_id}): {resp.status_code} - {resp.text}")
+            logging.error(f"❌ Ошибка отправки: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
         logging.error(f"❌ Исключение при отправке: {e}")
@@ -323,7 +183,7 @@ def send_message(recipient_id, text):
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
-    url = f"{ACTIVE_BASE}/updates"
+    url = f"{API_BASE}/updates"
     headers = {'Authorization': TOKEN}
     params = {'limit': 10, 'timeout': 30}
     if offset:
@@ -443,6 +303,7 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
+            # Уведомляем пользователя
             try:
                 send_message(str(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
