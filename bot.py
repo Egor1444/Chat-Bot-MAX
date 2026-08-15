@@ -6,13 +6,17 @@ import requests
 import urllib3
 from datetime import datetime
 
-# Отключаем предупреждения о небезопасном SSL
+# Отключаем предупреждения SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ Токен не найден! Установите BOT_TOKEN или MAX_BOT_TOKEN")
+
+# Маскируем токен для логов (показываем только первые 4 и последние 4 символа)
+masked_token = TOKEN[:4] + "..." + TOKEN[-4:] if len(TOKEN) > 8 else "***"
+logging.info(f"Токен: {masked_token}")
 
 # ===== ID АДМИНИСТРАТОРА =====
 ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
@@ -136,7 +140,7 @@ TOTAL_QUESTIONS = len(QUESTIONS)
 def send_message(chat_id, text):
     url = f"{API_BASE}/messages"
     headers = {
-        'Authorization': f'Bearer {TOKEN}',
+        'Authorization': TOKEN,  # Без Bearer!
         'Content-Type': 'application/json'
     }
     payload = {
@@ -158,7 +162,7 @@ def send_message(chat_id, text):
 def get_updates(offset=None):
     url = f"{API_BASE}/messages"
     headers = {
-        'Authorization': f'Bearer {TOKEN}'
+        'Authorization': TOKEN  # Без Bearer!
     }
     params = {'timeout': 30, 'limit': 10}
     if offset:
@@ -167,7 +171,6 @@ def get_updates(offset=None):
         response = requests.get(url, headers=headers, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
-            # Возвращаем список сообщений
             return data.get('messages', [])
         else:
             logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
@@ -360,16 +363,11 @@ def main():
         try:
             updates = get_updates(offset=last_update_id + 1)
             for update in updates:
-                # Если формат обновлений – список сообщений, то каждое обновление может быть сообщением
-                # Или может быть обёрнуто в {'message': {...}}
                 msg = update.get('message') if isinstance(update, dict) and 'message' in update else update
                 if msg:
-                    # Обновляем last_update_id – у каждого сообщения может быть свой id
-                    # Если update содержит 'update_id', используем его
                     if isinstance(update, dict) and 'update_id' in update:
                         last_update_id = update.get('update_id', 0)
                     else:
-                        # Если нет update_id, используем id сообщения
                         last_update_id = msg.get('id', last_update_id + 1)
                     handle_message(msg)
         except Exception as e:
