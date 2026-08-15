@@ -14,16 +14,11 @@ if not TOKEN:
     raise ValueError("❌ Токен не найден! Установите BOT_TOKEN или MAX_BOT_TOKEN")
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
-# ===== БАЗОВЫЙ URL =====
 API_BASE = "https://platform-api2.max.ru"
-
-# ===== ID АДМИНИСТРАТОРА (замените на свой) =====
-ADMIN_IDS = [123456789]  # ⚠️ Замените на реальный ID из /id
-
-# ===== ЛОГИРОВАНИЕ =====
+ADMIN_IDS = [123456789]  # ⚠️ замените на свой ID
 logging.basicConfig(level=logging.INFO)
 
-# ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
+# ===== АВТОРИЗАЦИЯ =====
 def check_auth():
     url = f"{API_BASE}/me"
     headers = {'Authorization': TOKEN}
@@ -152,7 +147,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ =====
+# ===== ОТПРАВКА =====
 def send_message(chat_id, text):
     url = f"{API_BASE}/messages"
     headers = AUTH_HEADERS.copy()
@@ -161,7 +156,7 @@ def send_message(chat_id, text):
         'chatId': str(chat_id),
         'text': text
     }
-    logging.info(f"📤 Отправка пользователю {chat_id}: {text[:50]}...")
+    logging.info(f"📤 Отправка в чат {chat_id}: {text[:50]}...")
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
@@ -183,10 +178,7 @@ def get_updates(offset=None):
         response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
-            updates = data.get('updates', [])
-            # Сохраняем marker для следующего запроса (если нужно)
-            # Но мы используем offset, поэтому просто возвращаем updates
-            return updates
+            return data.get('updates', [])
         else:
             logging.error(f"❌ Ошибка получения обновлений: {response.status_code} - {response.text}")
             return []
@@ -207,26 +199,24 @@ def notify_admins(app_id, data, user_id):
     for admin_id in ADMIN_IDS:
         send_message(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ =====
+# ===== ОБРАБОТКА СООБЩЕНИЙ (ИСПРАВЛЕННАЯ) =====
 def handle_message(message):
-    # Извлекаем ID отправителя
     sender = message.get('sender', {})
     user_id = str(sender.get('user_id', ''))
-    if not user_id:
-        logging.warning("Нет sender.user_id в сообщении")
+    recipient = message.get('recipient', {})
+    chat_id = str(recipient.get('chat_id', ''))
+
+    if not user_id or not chat_id:
+        logging.warning("Нет sender.user_id или recipient.chat_id")
         return
 
-    # Для ответа используем user_id как chat_id
-    chat_id = user_id
-
-    # Извлекаем текст
     body = message.get('body', {})
     text = body.get('text', '')
 
     if not text:
         return
 
-    logging.info(f"📩 Получено сообщение от {user_id}: {text[:50]}")
+    logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
 
     if text.startswith('/'):
         command = text.split()[0].lower()
@@ -384,23 +374,20 @@ def handle_message(message):
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def main():
     logging.info("🚀 Бот запущен...")
-    last_marker = 0  # используем marker вместо offset
+    last_marker = 0
 
     while True:
         try:
             updates = get_updates(offset=last_marker + 1)
             for update in updates:
-                # Проверяем тип обновления
                 if update.get('update_type') != 'message_created':
                     continue
                 message = update.get('message')
                 if message:
                     handle_message(message)
-                    # Сохраняем marker после обработки
                     if 'marker' in update:
                         last_marker = update['marker']
                     else:
-                        # Если нет marker, используем timestamp или увеличиваем
                         last_marker += 1
         except Exception as e:
             logging.error(f"❌ Ошибка в цикле: {e}")
