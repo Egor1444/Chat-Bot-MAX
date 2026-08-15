@@ -3,7 +3,11 @@ import time
 import logging
 import sqlite3
 import requests
+import urllib3
 from datetime import datetime
+
+# Отключаем предупреждения о небезопасном SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
@@ -128,7 +132,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (НОВОЕ API) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ =====
 def send_message(chat_id, text):
     url = f"{API_BASE}/messages"
     headers = {
@@ -140,7 +144,7 @@ def send_message(chat_id, text):
         'text': text
     }
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
             return response.json()
         else:
@@ -150,23 +154,20 @@ def send_message(chat_id, text):
         logging.error(f"Исключение при отправке: {e}")
         return None
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (LONG POLLING) =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
     url = f"{API_BASE}/messages"
     headers = {
         'Authorization': f'Bearer {TOKEN}'
     }
-    params = {}
+    params = {'timeout': 30, 'limit': 10}
     if offset:
         params['offset'] = offset
-    # Добавляем timeout для long polling (максимум 30 секунд)
-    params['timeout'] = 30
-    params['limit'] = 10
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=35)
+        response = requests.get(url, headers=headers, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
-            # Ожидаем, что API вернёт список сообщений
+            # Возвращаем список сообщений
             return data.get('messages', [])
         else:
             logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
@@ -190,8 +191,6 @@ def notify_admins(app_id, data, user_id):
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(message):
-    # В новом API сообщения могут иметь другую структуру
-    # Предполагаем, что message содержит поля: id, from, chat, text, date
     user_id = str(message.get('from', {}).get('id', ''))
     chat_id = message.get('chat', {}).get('id', '')
     text = message.get('text', '')
@@ -361,11 +360,17 @@ def main():
         try:
             updates = get_updates(offset=last_update_id + 1)
             for update in updates:
-                # В новом API каждое обновление может иметь поле 'message'
-                msg = update.get('message')
+                # Если формат обновлений – список сообщений, то каждое обновление может быть сообщением
+                # Или может быть обёрнуто в {'message': {...}}
+                msg = update.get('message') if isinstance(update, dict) and 'message' in update else update
                 if msg:
-                    # Обновляем last_update_id – в новом API у каждого сообщения есть свой id
-                    last_update_id = update.get('update_id', 0)
+                    # Обновляем last_update_id – у каждого сообщения может быть свой id
+                    # Если update содержит 'update_id', используем его
+                    if isinstance(update, dict) and 'update_id' in update:
+                        last_update_id = update.get('update_id', 0)
+                    else:
+                        # Если нет update_id, используем id сообщения
+                        last_update_id = msg.get('id', last_update_id + 1)
                     handle_message(msg)
         except Exception as e:
             logging.error(f"Ошибка в цикле: {e}")
