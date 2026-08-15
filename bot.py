@@ -8,19 +8,16 @@ from datetime import datetime
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logging.warning("⚠️ Токен взят из кода (только для теста)")
 
 logging.basicConfig(level=logging.INFO)
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
 API_BASE = "https://platform-api2.max.ru"
-ADMIN_IDS = [364551480]  # Ваш user_id из логов
+ADMIN_IDS = [364551480]  # Ваш user_id
 
-# ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
 def check_auth():
     url = f"{API_BASE}/me"
     headers = {'Authorization': TOKEN}
@@ -39,7 +36,6 @@ def check_auth():
 if not check_auth():
     raise RuntimeError("❌ Не удалось авторизоваться. Проверьте токен.")
 
-# ===== БАЗА ДАННЫХ =====
 DB_PATH = "news.db"
 
 def init_db():
@@ -65,7 +61,6 @@ def init_db():
 
 init_db()
 
-# ===== ФУНКЦИИ БАЗЫ =====
 def save_application(user_id, data):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -124,7 +119,6 @@ def get_stats():
     conn.close()
     return total, pending, approved, rejected
 
-# ===== ХРАНИЛИЩЕ СОСТОЯНИЙ =====
 user_states = {}
 
 def get_user_state(user_id):
@@ -138,7 +132,6 @@ def set_user_state(user_id, step, data=None):
 def clear_user_state(user_id):
     user_states.pop(str(user_id), None)
 
-# ===== ВОПРОСЫ =====
 QUESTIONS = [
     ('full_name', 'Вопрос 1 из 5. Ваше полное имя (ФИО)?'),
     ('action_desc', 'Вопрос 2 из 5. Опишите суть события или действия.'),
@@ -148,43 +141,22 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (С ПРИОРИТЕТОМ НА USER_ID) =====
-def _send_to_id(recipient_id, text):
+# ===== ОТПРАВКА СООБЩЕНИЙ (ТОЛЬКО НА РАБОЧИЙ ID) =====
+def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
     params = {'chat_id': str(recipient_id), 'text': text}
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
-        # Логируем тело ответа для диагностики
-        logging.info(f"📤 Отправка на ID={recipient_id}, статус={resp.status_code}, ответ={resp.text[:200]}")
         if resp.status_code == 200:
+            logging.info(f"✅ Отправлено на {recipient_id}")
             return True
         else:
+            logging.error(f"❌ Ошибка отправки на {recipient_id}: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
-        logging.error(f"❌ Исключение на ID={recipient_id}: {e}")
+        logging.error(f"❌ Исключение при отправке: {e}")
         return False
-
-def send_message(recipient_id, text):
-    # Сначала пробуем отправить на user_id (364551480)
-    # Если переданный ID не совпадает с user_id, пробуем его первым
-    user_id = 364551480
-    alt_id = 2712418
-    
-    # Пробуем отправить на user_id (если он отличается от recipient_id, пробуем его в первую очередь)
-    ids_to_try = []
-    if recipient_id != user_id:
-        ids_to_try.append(user_id)
-    ids_to_try.append(recipient_id)
-    if alt_id not in ids_to_try:
-        ids_to_try.append(alt_id)
-    
-    for target_id in ids_to_try:
-        if _send_to_id(target_id, text):
-            logging.info(f"✅ Сообщение успешно отправлено на ID={target_id}")
-            return True
-    logging.error("❌ Все попытки отправки не удались")
-    return False
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
@@ -205,7 +177,6 @@ def get_updates(offset=None):
         logging.error(f"❌ Исключение при получении: {e}")
         return []
 
-# ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
 def notify_admins(app_id, data):
     text = (
         f"📢 Новая заявка #{app_id}\n"
@@ -218,7 +189,6 @@ def notify_admins(app_id, data):
     for admin_id in ADMIN_IDS:
         send_message(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
     message = update.get('message', {})
     if not message:
@@ -241,7 +211,6 @@ def handle_message(update):
 
     logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
 
-    # Обработка команд (без изменений)
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -355,7 +324,6 @@ def handle_message(update):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # Обработка состояний опроса
     state = get_user_state(user_id)
     if state is None:
         return
@@ -396,7 +364,6 @@ def handle_message(update):
             )
             send_message(chat_id, summary)
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
 def main():
     logging.info("🚀 Бот запущен...")
     last_marker = 0
