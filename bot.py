@@ -3,9 +3,11 @@ import sys
 import asyncio
 import logging
 import sqlite3
+import json
 from datetime import datetime
+import time
 
-# ===== АВТОУСТАНОВКА maxapi (если отсутствует) =====
+# ===== ПРОВЕРКА УСТАНОВКИ maxapi =====
 try:
     from maxapi import Bot
 except ImportError:
@@ -51,6 +53,7 @@ def init_db():
 
 init_db()
 
+# ===== ФУНКЦИИ БАЗЫ =====
 def save_application(user_id, data):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -109,7 +112,7 @@ def get_stats():
     conn.close()
     return total, pending, approved, rejected
 
-# ===== СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ =====
+# ===== ХРАНИЛИЩЕ СОСТОЯНИЙ =====
 user_states = {}
 
 def get_user_state(user_id):
@@ -134,7 +137,7 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
-async def notify_admins(app_id, data, user_id, bot):
+async def notify_admins(bot, app_id, data, user_id):
     text = (
         f"📢 Новая заявка #{app_id}\n"
         f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -149,11 +152,14 @@ async def notify_admins(app_id, data, user_id, bot):
         except Exception as e:
             logging.error(f"Не удалось уведомить админа {admin_id}: {e}")
 
-# ===== ОСНОВНОЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ =====
-async def handle_message(event, bot):
-    user_id = str(event.from_.id)
-    text = event.text or ""
-    chat_id = event.chat.id
+# ===== ОБРАБОТКА СООБЩЕНИЙ =====
+async def handle_message(bot, message):
+    user_id = str(message.get('from', {}).get('id', ''))
+    chat_id = message.get('chat', {}).get('id', '')
+    text = message.get('text', '')
+
+    if not text:
+        return
 
     # === ОБРАБОТКА КОМАНД ===
     if text.startswith('/'):
@@ -267,26 +273,23 @@ async def handle_message(event, bot):
             )
             return
         else:
-            # Неизвестная команда
             await bot.send_message(chat_id=chat_id, text="Неизвестная команда. Используйте /start для справки.")
             return
 
     # === ЕСЛИ НЕ КОМАНДА — ОБРАБОТКА СОСТОЯНИЙ ===
     state = get_user_state(user_id)
     if state is None:
-        # Не в процессе опроса — игнорируем
         return
 
     step = state['step']
     data = state['data']
 
-    # Режим подтверждения
     if step == -1:
         if text.lower() == "да":
             app_id = save_application(user_id, data)
             clear_user_state(user_id)
             await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
-            await notify_admins(app_id, data, user_id, bot)
+            await notify_admins(bot, app_id, data, user_id)
         elif text.lower() == "нет":
             clear_user_state(user_id)
             await bot.send_message(chat_id=chat_id, text="❌ Заявка отменена.")
@@ -294,7 +297,6 @@ async def handle_message(event, bot):
             await bot.send_message(chat_id=chat_id, text='Пожалуйста, ответьте "Да" или "Нет".')
         return
 
-    # Основной опрос
     if step < TOTAL_QUESTIONS:
         field = QUESTIONS[step][0]
         data[field] = text
@@ -315,17 +317,24 @@ async def handle_message(event, bot):
             )
             await bot.send_message(chat_id=chat_id, text=summary)
 
-# ===== ЗАПУСК =====
+# ===== ОСНОВНОЙ ЦИКЛ (LONG POLLING) =====
 async def main():
     bot = Bot(token=TOKEN)
-
-    # Регистрируем обработчик всех сообщений
-    @bot.on('message')
-    async def handler(event):
-        await handle_message(event, bot)
+    last_update_id = 0
 
     logging.info("🚀 Бот запущен...")
-    await bot.start_polling()
+
+    while True:
+        try:
+            # Получаем обновления
+            updates = await bot.get_updates(offset=last_update_id + 1, timeout=30)
+            for update in updates:
+                last_update_id = update.get('update_id', 0)
+                if 'message' in update:
+                    await handle_message(bot, update['message'])
+        except Exception as e:
+            logging.error(f"Ошибка в цикле: {e}")
+            await asyncio.sleep(5)  # пауза при ошибке
 
 if __name__ == "__main__":
     asyncio.run(main())
