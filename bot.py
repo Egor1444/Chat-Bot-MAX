@@ -15,7 +15,7 @@ if not TOKEN:
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
 API_BASE = "https://platform-api2.max.ru"
-ADMIN_IDS = [123456789]  # ⚠️ замените на свой ID
+ADMIN_IDS = [123456789]  # ⚠️ замените на ваш ID
 logging.basicConfig(level=logging.INFO)
 
 # ===== АВТОРИЗАЦИЯ =====
@@ -147,13 +147,14 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА =====
+# ===== ОТПРАВКА СООБЩЕНИЙ =====
 def send_message(chat_id, text):
+    """Отправляет сообщение в указанный чат (chat_id должен быть корректным)"""
     url = f"{API_BASE}/messages"
     headers = AUTH_HEADERS.copy()
     headers['Content-Type'] = 'application/json'
     payload = {
-        'chatId': str(chat_id),
+        'chatId': str(chat_id),   # chat_id – это recipient.chat_id из входящего сообщения
         'text': text
     }
     logging.info(f"📤 Отправка в чат {chat_id}: {text[:50]}...")
@@ -197,17 +198,27 @@ def notify_admins(app_id, data, user_id):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
+        # Для администратора используем его ID как chatId (если это не работает, нужно заменить на chat_id диалога)
+        # Но мы не знаем chat_id администратора. Попробуем использовать user_id.
         send_message(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ (ИСПРАВЛЕННАЯ) =====
-def handle_message(message):
-    sender = message.get('sender', {})
-    user_id = str(sender.get('user_id', ''))
+# ===== ОБРАБОТКА СООБЩЕНИЙ =====
+def handle_message(update):
+    # Извлекаем сообщение
+    message = update.get('message', {})
+    if not message:
+        return
+
+    # Получаем recipient.chat_id – это правильный идентификатор для ответа
     recipient = message.get('recipient', {})
     chat_id = str(recipient.get('chat_id', ''))
 
-    if not user_id or not chat_id:
-        logging.warning("Нет sender.user_id или recipient.chat_id")
+    # Получаем ID отправителя (для проверки прав администратора)
+    sender = message.get('sender', {})
+    user_id = str(sender.get('user_id', ''))
+
+    if not chat_id or not user_id:
+        logging.warning("❌ Нет chat_id или user_id в сообщении")
         return
 
     body = message.get('body', {})
@@ -218,6 +229,7 @@ def handle_message(message):
 
     logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
 
+    # Обработка команд
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -284,8 +296,9 @@ def handle_message(message):
                 return
             update_status(app_id, 'approved', feedback)
             send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
+            # Уведомляем пользователя
             try:
-                send_message(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
+                send_message(str(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
                 pass
             return
@@ -313,7 +326,7 @@ def handle_message(message):
             update_status(app_id, 'rejected', feedback)
             send_message(chat_id, f"❌ Заявка #{app_id} отклонена.")
             try:
-                send_message(int(app[1]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
+                send_message(str(app[1]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
             except:
                 pass
             return
@@ -331,6 +344,7 @@ def handle_message(message):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
+    # Обработка состояний опроса
     state = get_user_state(user_id)
     if state is None:
         return
@@ -382,13 +396,12 @@ def main():
             for update in updates:
                 if update.get('update_type') != 'message_created':
                     continue
-                message = update.get('message')
-                if message:
-                    handle_message(message)
-                    if 'marker' in update:
-                        last_marker = update['marker']
-                    else:
-                        last_marker += 1
+                # Передаём весь update, чтобы внутри извлечь chat_id
+                handle_message(update)
+                if 'marker' in update:
+                    last_marker = update['marker']
+                else:
+                    last_marker += 1
         except Exception as e:
             logging.error(f"❌ Ошибка в цикле: {e}")
         time.sleep(1)
