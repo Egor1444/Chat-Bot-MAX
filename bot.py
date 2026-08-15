@@ -1,20 +1,11 @@
 import os
 import sys
-import asyncio
+import time
+import json
 import logging
 import sqlite3
-import json
+import requests
 from datetime import datetime
-import time
-
-# ===== ПРОВЕРКА УСТАНОВКИ maxapi =====
-try:
-    from maxapi import Bot
-except ImportError:
-    print("maxapi не найдена. Устанавливаем...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "maxapi"])
-    from maxapi import Bot
 
 # ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
@@ -23,6 +14,10 @@ if not TOKEN:
 
 # ===== ID АДМИНИСТРАТОРА =====
 ADMIN_IDS = [123456789]  # ⚠️ Замените на свой ID
+
+# ===== НАСТРОЙКИ API MAX =====
+# Если известен базовый URL – укажите, иначе оставьте как есть
+API_BASE = "https://api.max.ru/v1"  # возможно, другой адрес
 
 # ===== ЛОГИРОВАНИЕ =====
 logging.basicConfig(level=logging.INFO)
@@ -136,8 +131,26 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
+# ===== ОТПРАВКА СООБЩЕНИЙ =====
+def send_message(chat_id, text):
+    """Отправляет сообщение через API MAX"""
+    url = f"{API_BASE}/bot{TOKEN}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': text
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        logging.error(f"Ошибка отправки сообщения: {e}")
+        return None
+
+def send_message_to_admin(admin_id, text):
+    return send_message(admin_id, text)
+
 # ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
-async def notify_admins(bot, app_id, data, user_id):
+def notify_admins(app_id, data, user_id):
     text = (
         f"📢 Новая заявка #{app_id}\n"
         f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -147,13 +160,10 @@ async def notify_admins(bot, app_id, data, user_id):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(chat_id=admin_id, text=text)
-        except Exception as e:
-            logging.error(f"Не удалось уведомить админа {admin_id}: {e}")
+        send_message(admin_id, text)
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
-async def handle_message(bot, message):
+def handle_message(message):
     user_id = str(message.get('from', {}).get('id', ''))
     chat_id = message.get('chat', {}).get('id', '')
     text = message.get('text', '')
@@ -165,115 +175,115 @@ async def handle_message(bot, message):
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
-            await bot.send_message(
-                chat_id=chat_id,
-                text="👋 Привет! Я бот для подачи новостей.\n"
-                     "Чтобы начать, отправьте /news\n\n"
-                     "Администратор:\n"
-                     "/pending — список заявок\n"
-                     "/approve <id> [комментарий]\n"
-                     "/reject <id> [комментарий]\n"
-                     "/stats — статистика"
+            send_message(chat_id,
+                "👋 Привет! Я бот для подачи новостей.\n"
+                "Чтобы начать, отправьте /news\n\n"
+                "Администратор:\n"
+                "/pending — список заявок\n"
+                "/approve <id> [комментарий]\n"
+                "/reject <id> [комментарий]\n"
+                "/stats — статистика"
             )
             return
         elif command == '/id':
-            await bot.send_message(chat_id=chat_id, text=f"Ваш ID: {user_id}")
+            send_message(chat_id, f"Ваш ID: {user_id}")
             return
         elif command == '/cancel':
             if user_id in user_states:
                 clear_user_state(user_id)
-                await bot.send_message(chat_id=chat_id, text="✅ Заявка отменена.")
+                send_message(chat_id, "✅ Заявка отменена.")
             else:
-                await bot.send_message(chat_id=chat_id, text="Нет активной заявки.")
+                send_message(chat_id, "Нет активной заявки.")
             return
         elif command == '/news':
             if user_id in user_states:
-                await bot.send_message(chat_id=chat_id, text="У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
+                send_message(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
                 return
             set_user_state(user_id, 0)
-            await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
+            send_message(chat_id, QUESTIONS[0][1])
             return
         elif command == '/pending':
             if int(user_id) not in ADMIN_IDS:
-                await bot.send_message(chat_id=chat_id, text="⛔ Нет прав.")
+                send_message(chat_id, "⛔ Нет прав.")
                 return
             rows = get_pending_applications()
             if not rows:
-                await bot.send_message(chat_id=chat_id, text="Нет заявок.")
+                send_message(chat_id, "Нет заявок.")
                 return
             msg = "📋 Ожидающие заявки:\n\n"
             for row in rows:
                 msg += f"ID: {row[0]}, {row[2]}, {row[-1]}\n"
-            await bot.send_message(chat_id=chat_id, text=msg)
+            send_message(chat_id, msg)
             return
         elif command == '/approve':
             if int(user_id) not in ADMIN_IDS:
-                await bot.send_message(chat_id=chat_id, text="⛔ Нет прав.")
+                send_message(chat_id, "⛔ Нет прав.")
                 return
             args = text.split(maxsplit=2)
             if len(args) < 2:
-                await bot.send_message(chat_id=chat_id, text="Использование: /approve <id> [комментарий]")
+                send_message(chat_id, "Использование: /approve <id> [комментарий]")
                 return
             try:
                 app_id = int(args[1])
             except ValueError:
-                await bot.send_message(chat_id=chat_id, text="ID должен быть числом.")
+                send_message(chat_id, "ID должен быть числом.")
                 return
             feedback = args[2] if len(args) > 2 else ""
             app = get_application_by_id(app_id)
             if not app:
-                await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
+                send_message(chat_id, f"Заявка #{app_id} не найдена.")
                 return
             if app[9] != 'pending':
-                await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана (статус: {app[9]}).")
+                send_message(chat_id, f"Заявка уже обработана (статус: {app[9]}).")
                 return
             update_status(app_id, 'approved', feedback)
-            await bot.send_message(chat_id=chat_id, text=f"✅ Заявка #{app_id} одобрена.")
+            send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
+            # уведомление пользователю
             try:
-                await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
+                send_message(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
                 pass
             return
         elif command == '/reject':
             if int(user_id) not in ADMIN_IDS:
-                await bot.send_message(chat_id=chat_id, text="⛔ Нет прав.")
+                send_message(chat_id, "⛔ Нет прав.")
                 return
             args = text.split(maxsplit=2)
             if len(args) < 2:
-                await bot.send_message(chat_id=chat_id, text="Использование: /reject <id> [комментарий]")
+                send_message(chat_id, "Использование: /reject <id> [комментарий]")
                 return
             try:
                 app_id = int(args[1])
             except ValueError:
-                await bot.send_message(chat_id=chat_id, text="ID должен быть числом.")
+                send_message(chat_id, "ID должен быть числом.")
                 return
             feedback = args[2] if len(args) > 2 else ""
             app = get_application_by_id(app_id)
             if not app:
-                await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
+                send_message(chat_id, f"Заявка #{app_id} не найдена.")
                 return
             if app[9] != 'pending':
-                await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана (статус: {app[9]}).")
+                send_message(chat_id, f"Заявка уже обработана (статус: {app[9]}).")
                 return
             update_status(app_id, 'rejected', feedback)
-            await bot.send_message(chat_id=chat_id, text=f"❌ Заявка #{app_id} отклонена.")
+            send_message(chat_id, f"❌ Заявка #{app_id} отклонена.")
             try:
-                await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
+                send_message(int(app[1]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
             except:
                 pass
             return
         elif command == '/stats':
             if int(user_id) not in ADMIN_IDS:
-                await bot.send_message(chat_id=chat_id, text="⛔ Нет прав.")
+                send_message(chat_id, "⛔ Нет прав.")
                 return
             total, pending, approved, rejected = get_stats()
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
+            send_message(
+                chat_id,
+                f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
             )
             return
         else:
-            await bot.send_message(chat_id=chat_id, text="Неизвестная команда. Используйте /start для справки.")
+            send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
     # === ЕСЛИ НЕ КОМАНДА — ОБРАБОТКА СОСТОЯНИЙ ===
@@ -288,13 +298,13 @@ async def handle_message(bot, message):
         if text.lower() == "да":
             app_id = save_application(user_id, data)
             clear_user_state(user_id)
-            await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
-            await notify_admins(bot, app_id, data, user_id)
+            send_message(chat_id, "✅ Заявка успешно отправлена на модерацию!")
+            notify_admins(app_id, data, user_id)
         elif text.lower() == "нет":
             clear_user_state(user_id)
-            await bot.send_message(chat_id=chat_id, text="❌ Заявка отменена.")
+            send_message(chat_id, "❌ Заявка отменена.")
         else:
-            await bot.send_message(chat_id=chat_id, text='Пожалуйста, ответьте "Да" или "Нет".')
+            send_message(chat_id, 'Пожалуйста, ответьте "Да" или "Нет".')
         return
 
     if step < TOTAL_QUESTIONS:
@@ -303,7 +313,7 @@ async def handle_message(bot, message):
         next_step = step + 1
         if next_step < TOTAL_QUESTIONS:
             set_user_state(user_id, next_step, data)
-            await bot.send_message(chat_id=chat_id, text=QUESTIONS[next_step][1])
+            send_message(chat_id, QUESTIONS[next_step][1])
         else:
             set_user_state(user_id, -1, data)
             summary = (
@@ -315,26 +325,34 @@ async def handle_message(bot, message):
                 f"5. Место/время: {data.get('place_time', '—')}\n"
                 "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
             )
-            await bot.send_message(chat_id=chat_id, text=summary)
+            send_message(chat_id, summary)
 
-# ===== ОСНОВНОЙ ЦИКЛ (LONG POLLING) =====
-async def main():
-    bot = Bot(token=TOKEN)
-    last_update_id = 0
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
+def get_updates(offset=None):
+    url = f"{API_BASE}/bot{TOKEN}/getUpdates"
+    params = {'offset': offset} if offset else {}
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        return response.json().get('result', [])
+    except Exception as e:
+        logging.error(f"Ошибка получения обновлений: {e}")
+        return []
 
+# ===== ОСНОВНОЙ ЦИКЛ =====
+def main():
     logging.info("🚀 Бот запущен...")
+    last_update_id = 0
 
     while True:
         try:
-            # Получаем обновления
-            updates = await bot.get_updates(offset=last_update_id + 1, timeout=30)
+            updates = get_updates(offset=last_update_id + 1)
             for update in updates:
                 last_update_id = update.get('update_id', 0)
                 if 'message' in update:
-                    await handle_message(bot, update['message'])
+                    handle_message(update['message'])
         except Exception as e:
             logging.error(f"Ошибка в цикле: {e}")
-            await asyncio.sleep(5)  # пауза при ошибке
+        time.sleep(1)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
