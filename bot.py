@@ -6,7 +6,7 @@ import requests
 import urllib3
 from datetime import datetime
 
-# Отключаем SSL-предупреждения (для отладки)
+# Отключаем SSL-предупреждения
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== ТОКЕН =====
@@ -15,7 +15,7 @@ if not TOKEN:
     raise ValueError("❌ Токен не найден! Установите BOT_TOKEN или MAX_BOT_TOKEN")
 logging.info(f"🔑 Токен (первые 4 символа): {TOKEN[:4]}... (длина {len(TOKEN)})")
 
-# ===== БАЗОВЫЙ URL API MAX =====
+# ===== БАЗОВЫЙ URL =====
 API_BASE = "https://platform-api2.max.ru"
 
 # ===== ID АДМИНИСТРАТОРА =====
@@ -178,23 +178,47 @@ def send_message(chat_id, text):
         logging.error(f"Исключение при отправке: {e}")
         return None
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (с перебором вариантов) =====
 def get_updates(offset=None):
-    url = f"{API_BASE}/messages"
-    params = {'timeout': 30, 'limit': 10}
-    if offset:
-        params['offset'] = offset
-    try:
-        response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('messages', [])
-        else:
-            logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
-            return []
-    except Exception as e:
-        logging.error(f"Исключение при получении: {e}")
-        return []
+    variants = [
+        {'path': '/messages', 'params': {}},
+        {'path': '/updates', 'params': {}},
+        {'path': '/messages', 'params': {'chatId': 'all'}},
+        {'path': '/updates', 'params': {'chatId': 'all'}},
+        {'path': '/messages', 'params': {'chatId': 0}},
+        {'path': '/messages', 'params': {'messageIds': []}},  # может ожидать массив
+    ]
+    for variant in variants:
+        path = variant['path']
+        params = variant['params'].copy()
+        if offset:
+            params['offset'] = offset
+        if 'limit' not in params:
+            params['limit'] = 10
+        if 'timeout' not in params:
+            params['timeout'] = 30
+
+        url = f"{API_BASE}{path}"
+        try:
+            response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
+            if response.status_code == 200:
+                data = response.json()
+                if 'messages' in data:
+                    return data['messages']
+                elif 'result' in data:
+                    return data['result']
+                elif isinstance(data, list):
+                    return data
+                else:
+                    logging.warning(f"Неизвестный формат ответа от {path}: {data}")
+                    return []
+            else:
+                logging.debug(f"Попытка {path} с params={params} -> {response.status_code}")
+        except Exception as e:
+            logging.debug(f"Ошибка на {path}: {e}")
+
+    logging.error("❌ Все попытки получения обновлений не удались.")
+    return []
 
 # ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
 def notify_admins(app_id, data, user_id):
