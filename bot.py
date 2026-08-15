@@ -38,10 +38,8 @@ def check_auth():
             if resp.status_code == 200:
                 logging.info(f"✅ Авторизация успешна! Используется: {list(headers.keys())[0]}")
                 return headers
-            else:
-                logging.debug(f"Попытка с {headers} -> {resp.status_code}")
-        except Exception as e:
-            logging.debug(f"Ошибка с {headers}: {e}")
+        except:
+            pass
     logging.error("❌ Все попытки авторизации не удались. Проверьте токен.")
     return None
 
@@ -163,9 +161,8 @@ def send_message(chat_id, text):
     url = f"{API_BASE}/messages"
     headers = AUTH_HEADERS.copy()
     headers['Content-Type'] = 'application/json'
-    # Пробуем передавать chatId как число (из лога видно, что это число)
     payload = {
-        'chatId': chat_id if isinstance(chat_id, int) else int(chat_id),
+        'chatId': str(chat_id),
         'text': text
     }
     try:
@@ -189,7 +186,7 @@ def get_updates(offset=None):
         response = requests.get(url, headers=AUTH_HEADERS, params=params, timeout=35, verify=False)
         if response.status_code == 200:
             data = response.json()
-            # Из лога видно, что данные приходят в поле 'updates'
+            # В ответе от /updates есть поле 'updates', а не 'messages'
             return data.get('updates', [])
         else:
             logging.error(f"Ошибка получения обновлений: {response.status_code} - {response.text}")
@@ -213,26 +210,26 @@ def notify_admins(app_id, data, user_id):
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
-    # В логе update может быть как словарь с полями, так и просто message
-    # Если это update_type == 'message_created', то есть поле 'message'
-    if update.get('update_type') == 'message_created':
-        message = update.get('message')
-    else:
-        # Если это просто сообщение (без обёртки)
-        message = update
-
+    """
+    Обрабатывает одно обновление (update) из списка, полученного от /updates.
+    Обновление может содержать ключ 'message' (новое сообщение) или 'message_id' (удаление).
+    Мы обрабатываем только события с типом 'message_created'.
+    """
+    # Проверяем, что это новое сообщение
+    if update.get('update_type') != 'message_created':
+        return
+    message = update.get('message')
     if not message:
         return
 
-    # Парсим из структуры:
     user_id = str(message.get('sender', {}).get('user_id', ''))
-    chat_id = message.get('recipient', {}).get('chat_id')
+    chat_id = user_id  # Используем ID отправителя как получателя для ответа
     text = message.get('body', {}).get('text', '')
 
-    if not text or not chat_id:
+    if not text:
         return
 
-    # Обработка команд
+    # === ОБРАБОТКА КОМАНД ===
     if text.startswith('/'):
         command = text.split()[0].lower()
         if command == '/start':
@@ -346,7 +343,7 @@ def handle_message(update):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # Не-команды — обработка состояний
+    # === ЕСЛИ НЕ КОМАНДА — ОБРАБОТКА СОСТОЯНИЙ ===
     state = get_user_state(user_id)
     if state is None:
         return
@@ -396,21 +393,11 @@ def main():
         try:
             updates = get_updates(offset=last_update_id + 1)
             for update in updates:
-                # Из лога видно, что у каждого обновления есть поле 'timestamp', но не 'update_id'
-                # используем timestamp как маркер (или можно использовать marker из ответа, но мы его не сохраняем)
-                # Для простоты будем считать last_update_id = max(timestamp)
-                # или можно использовать инкремент
-                # Пока просто обрабатываем все обновления и не обновляем offset, чтобы не пропустить
-                # Но чтобы избежать дублирования, будем использовать timestamp как offset
-                # В логе есть поле 'timestamp' у каждого update.
+                # Если у обновления есть поле 'update_id', используем его для смещения
+                if 'update_id' in update:
+                    last_update_id = update['update_id']
+                # Обрабатываем обновление
                 handle_message(update)
-                # Для обновления offset можно брать timestamp + 1 (миллисекунды)
-                # Но лучше использовать поле 'marker' из ответа (5686) – его можно передавать как offset.
-                # Однако в ответе оно приходит на уровне всего ответа, а не каждого update.
-                # Поэтому будем просто запоминать последний timestamp и использовать его как offset.
-                ts = update.get('timestamp')
-                if ts and ts > last_update_id:
-                    last_update_id = ts
         except Exception as e:
             logging.error(f"Ошибка в цикле: {e}")
         time.sleep(1)
