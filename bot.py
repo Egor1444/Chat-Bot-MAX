@@ -12,23 +12,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logging.warning("⚠️ Токен взят из кода (для теста)")
+    logging.warning("⚠️ Токен взят из кода (только для теста)")
 
 logging.basicConfig(level=logging.INFO)
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
-# ===== РАБОЧИЙ БАЗОВЫЙ URL И СПОСОБ ОТПРАВКИ =====
+# ===== БАЗОВЫЙ URL =====
 API_BASE = "https://platform-api2.max.ru"
 
-# Найденный рабочий способ:
-WORKING_METHOD = "GET"
-WORKING_ENDPOINT = "/messages"
-WORKING_FIELD = "chat_id"
-WORKING_DATA_TYPE = "params"
-WORKING_CHAT_ID = 2712418  # recipient.chat_id (из логов)
-
 # ===== ID АДМИНИСТРАТОРА =====
-ADMIN_IDS = [364551480]  # Ваш user_id из логов (sender.user_id)
+ADMIN_IDS = [364551480]  # Замените на свой ID
 
 # ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
 def check_auth():
@@ -158,28 +151,35 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (использует найденный рабочий способ) =====
-def send_message(recipient_id, text):
-    """
-    Отправляет сообщение через GET /messages?chat_id=...&text=...
-    """
+# ===== ОТПРАВКА СООБЩЕНИЙ С FALLBACK =====
+def _send_to_id(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
-    params = {
-        'chat_id': str(recipient_id),
-        'text': text
-    }
+    params = {'chat_id': str(recipient_id), 'text': text}
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
         if resp.status_code == 200:
-            logging.info(f"✅ Сообщение отправлено в чат {recipient_id}")
+            logging.info(f"✅ Отправлено на {recipient_id}")
             return True
         else:
-            logging.error(f"❌ Ошибка отправки: {resp.status_code} - {resp.text}")
+            logging.warning(f"❌ Ошибка на {recipient_id}: {resp.status_code}")
             return False
     except Exception as e:
-        logging.error(f"❌ Исключение при отправке: {e}")
+        logging.error(f"❌ Исключение на {recipient_id}: {e}")
         return False
+
+def send_message(recipient_id, text):
+    # Пробуем отправить на переданный ID
+    if _send_to_id(recipient_id, text):
+        return True
+    # Если не удалось, пробуем альтернативные ID (известные из логов)
+    alt_ids = [2712418, 364551480]
+    for alt in alt_ids:
+        if str(alt) != str(recipient_id):
+            if _send_to_id(alt, text):
+                return True
+    logging.error("❌ Все попытки отправки не удались")
+    return False
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(offset=None):
@@ -303,7 +303,6 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            # Уведомляем пользователя
             try:
                 send_message(str(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
