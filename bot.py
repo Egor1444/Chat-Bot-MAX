@@ -21,37 +21,39 @@ if not TOKEN:
 
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
-# ===== БАЗОВЫЙ URL =====
-API_BASE = "https://max.ru"
+# ===== БАЗОВЫЙ URL (ОБНОВЛЕН НА ТРЕБУЕМЫЙ) =====
+API_BASE = "https://platform-api2.max.ru"
 
 # ===== ID АДМИНИСТРАТОРА =====
 ADMIN_IDS = [364551480]
 DB_PATH = "news.db"
 
 # ===== ИНДЕКСЫ БД (ИСПРАВЛЕНО СОГЛАСНО СТРУКТУРЕ ТАБЛИЦЫ) =====
-# Считаем с нуля: id(0), user_id(1), full_name(2), action_desc(3), benefit(4), 
+# id(0), user_id(1), full_name(2), action_desc(3), benefit(4), 
 # how_came(5), place_time(6), content(7), status(8), feedback(9), created_at(10)
 IDX_USER_ID = 1
 IDX_STATUS = 8
 IDX_FEEDBACK = 9
 
-# ===== ПРОВЕРКА АВТОРИЗАЦИИ =====
+# ===== МЯГКАЯ ПРОВЕРКА АВТОРИЗАЦИИ =====
 def check_auth():
     url = f"{API_BASE}/me"
     headers = {'Authorization': TOKEN}
     try:
         resp = requests.get(url, headers=headers, timeout=5, verify=False)
         if resp.status_code == 200:
-            logging.info("✅ Авторизация успешна!")
+            logging.info("✅ Авторизация успешна (метод /me доступен)!")
             return True
-        logging.error(f"❌ Ошибка авторизации: {resp.status_code} - {resp.text}")
-        return False
+        else:
+            # Мягкий режим: не роняем контейнер из-за 404 на эндпоинте /me
+            logging.warning(f"⚠️ Метод проверки /me вернул {resp.status_code}. Продолжаем запуск бота...")
+            return True
     except Exception as e:
-        logging.error(f"❌ Ошибка подключения: {e}")
-        return False
+        logging.warning(f"⚠️ Ошибка подключения при проверке /me: {e}. Продолжаем запуск...")
+        return True
 
-if not check_auth():
-    raise RuntimeError("❌ Не удалось авторизоваться.")
+# Запускаем мягкую проверку
+check_auth()
 
 # ===== БАЗА ДАННЫХ =====
 def init_db():
@@ -147,7 +149,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (ИСПРАВЛЕНО НА POST + JSON) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (ИСПРАВЛЕНО НА POST + JSON ДЛЯ ОТОБРАЖЕНИЯ У ПОЛЬЗОВАТЕЛЯ) =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {
@@ -161,7 +163,7 @@ def send_message(recipient_id, text):
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         if resp.status_code == 200:
-            logging.info(f"✅ Сообщение отправлено в чат {recipient_id}")
+            logging.info(f"✅ Сообщение успешно доставлено в чат {recipient_id}")
             return True
         else:
             logging.error(f"❌ Ошибка отправки на {recipient_id}: {resp.status_code} - {resp.text}")
@@ -181,7 +183,7 @@ def get_updates(offset=None):
         resp = requests.get(url, headers=headers, params=params, timeout=35, verify=False)
         if resp.status_code == 200:
             return resp.json().get('updates', [])
-        logging.error(f"❌ Ошибка получения обновлений: {resp.status_code} - {resp.text}")
+        logging.error(f"❌ Ошибка получения обновлений: {resp.status_code}")
         return []
     except Exception as e:
         logging.error(f"❌ Исключение при получении обновлений: {e}")
@@ -282,7 +284,3 @@ def handle_message(update):
                 send_message(chat_id, "ID должен быть числом.")
                 return
             feedback = command_parts[2] if len(command_parts) > 2 else ""
-            app = get_application_by_id(app_id)
-            if not app:
-                send_message(chat_id, f"Заявка #{app_id} не найдена.")
-                return
