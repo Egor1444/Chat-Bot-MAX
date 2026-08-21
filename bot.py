@@ -6,7 +6,6 @@ import requests
 import urllib3
 from collections import deque
 
-# Отключаем предупреждения SSL для тестов
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(
@@ -15,32 +14,24 @@ logging.basicConfig(
 )
 
 # ===== КОНФИГУРАЦИЯ =====
-# Используем URL из статьи
 API_BASE = "https://platform-api.max.ru"
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
-    # Токен из статьи для примера (замените на свой)
-    TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ"
+    TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logging.warning("⚠️ Токен взят из кода (только для теста)")
 
 ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
 HEADERS = {"Authorization": TOKEN, "Content-Type": "application/json"}
 
-# ===== ПРОСТАЯ ЗАЩИТА ОТ ДУБЛЕЙ (из статьи) =====
+# ===== ЗАЩИТА ОТ ДУБЛЕЙ =====
 _SEEN = deque(maxlen=200)
 
 def dedup_key(update: dict) -> tuple:
-    msg = update.get("message") or {}
-    body = msg.get("body") or {}
-    mid = body.get("mid")
-    cb = update.get("callback") or {}
-    return (
-        update.get("update_type"),
-        update.get("timestamp"),
-        mid,
-        cb.get("callback_id"),
-    )
+    msg = update.get('message', {})
+    body = msg.get('body', {})
+    mid = body.get('mid')
+    return (update.get('update_type'), update.get('timestamp'), mid)
 
 # ===== БАЗА ДАННЫХ =====
 def init_db():
@@ -65,7 +56,7 @@ def init_db():
 
 init_db()
 
-# ===== ФУНКЦИИ БАЗЫ =====
+# ===== ФУНКЦИИ БД =====
 def save_application(user_id, data):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -136,9 +127,9 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (с обработкой 429, как в статье) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (POST, как в статье) =====
 def send_message_safe(chat_id: int, text: str, retries: int = 3) -> None:
-    """Отправляет сообщение с обработкой 429 и повторами."""
+    """Отправляет сообщение через POST /messages с обработкой 429."""
     url = f"{API_BASE}/messages"
     body = {"chat_id": chat_id, "text": text}
     for attempt in range(retries):
@@ -151,15 +142,15 @@ def send_message_safe(chat_id: int, text: str, retries: int = 3) -> None:
                 continue
             if resp.status_code == 200:
                 logging.info(f"✅ Сообщение отправлено в чат {chat_id}")
-                return
+                return True
             else:
                 logging.error(f"❌ Ошибка отправки на {chat_id}: {resp.status_code} - {resp.text}")
-                return
+                return False
         except Exception as e:
             logging.error(f"❌ Исключение при отправке: {e}")
-            return
+            return False
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ (long polling) =====
+# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
 def get_updates(marker=None):
     url = f"{API_BASE}/updates"
     params = {"timeout": 30, "limit": 100}
@@ -190,7 +181,7 @@ def notify_admins(app_id, data):
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
-    # Проверка на дубли (из статьи)
+    # Проверка на дубли
     key = dedup_key(update)
     if key in _SEEN:
         return
@@ -201,7 +192,7 @@ def handle_message(update):
         return
 
     recipient = message.get('recipient', {})
-    chat_id = recipient.get('chat_id')  # Используем recipient.chat_id, как в статье
+    chat_id = recipient.get('chat_id')  # ИСПОЛЬЗУЕМ recipient.chat_id
     sender = message.get('sender', {})
     user_id = sender.get('user_id')
 
@@ -280,7 +271,7 @@ def handle_message(update):
             if not app:
                 send_message_safe(chat_id, f"Заявка #{app_id} не найдена.")
                 return
-            if app[8] != 'pending':  # статус
+            if app[8] != 'pending':
                 send_message_safe(chat_id, f"Заявка уже обработана (статус: {app[8]}).")
                 return
             update_status(app_id, 'approved', feedback)
@@ -372,12 +363,12 @@ def handle_message(update):
             )
             send_message_safe(chat_id, summary)
 
-# ===== ОСНОВНОЙ ЦИКЛ (long polling с маркером) =====
+# ===== ОСНОВНОЙ ЦИКЛ =====
 def main():
     logging.info("🚀 Бот запущен...")
     marker = None
     
-    # Отправляем тестовое сообщение при запуске
+    # Тестовое сообщение при запуске (отправляем на chat_id администратора)
     for admin_id in ADMIN_IDS:
         send_message_safe(admin_id, "🚀 Бот запущен и готов к работе!")
 
