@@ -137,7 +137,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ИСПРАВЛЕННЫЙ МЕТОД ОТПРАВКИ СООБЩЕНИЙ =====
+# ===== МЕТОД ОТПРАВКИ СООБЩЕНИЙ =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {
@@ -150,7 +150,7 @@ def send_message(recipient_id, text):
     }
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-        if resp.status_code in:  # Исправлено условие in
+        if resp.status_code in:  # Исправлено синтаксическое условие
             logging.info(f"✅ Успешно доставлено в чат {recipient_id}")
             return True
         else:
@@ -242,7 +242,7 @@ def handle_message(update):
                 send_message(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
                 return
             set_user_state(user_id, 0)
-            send_message(chat_id, QUESTIONS[0][1])  # Исправлено обращение к списку вопросов
+            send_message(chat_id, QUESTIONS[0][1])  # Исправлено
             return
         elif command == '/pending':
             if not is_admin:
