@@ -1,137 +1,145 @@
 import os
-import time
+import sys
+import asyncio
 import logging
 import sqlite3
-import requests
-import urllib3
-from collections import deque
+from datetime import datetime
 
-# Отключаем предупреждения SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# =========================================================
+# 0. АВТОУСТАНОВКА maxapi (если отсутствует)
+# =========================================================
+try:
+    from maxapi import Bot, Dispatcher, F
+    from maxapi.filters.command import CommandStart, Command
+    from maxapi.types import Message
+    from maxapi.fsm import State, StatesGroup, MemoryStorage, StateContext
+except ImportError:
+    print("📦 Устанавливаем библиотеку maxapi...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "maxapi", "--user"])
+    from maxapi import Bot, Dispatcher, F
+    from maxapi.filters.command import CommandStart, Command
+    from maxapi.types import Message
+    from maxapi.fsm import State, StatesGroup, MemoryStorage, StateContext
 
-# Настройка логирования
+# =========================================================
+# 1. КОНФИГУРАЦИЯ
+# =========================================================
+TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
+if not TOKEN:
+    # Если переменные не заданы – используем токен из кода (для локального теста)
+    TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
+    logging.warning("⚠️ Токен взят из кода. На хостинге обязательно задайте MAX_BOT_TOKEN!")
+
+ADMIN_IDS = [364551480]   # Замените на свой user_id
+DB_PATH = "news.db"
+
+# =========================================================
+# 2. НАСТРОЙКА ЛОГИРОВАНИЯ
+# =========================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-# ============================================
-#  КОНФИГУРАЦИЯ
-# ============================================
-API_BASE = "https://platform-api.max.ru"
-TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
-if not TOKEN:
-    TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logging.warning("⚠️ Токен взят из кода (только для теста)")
-
-ADMIN_IDS = [364551480]  # Ваш user_id (узнайте через /id)
-DB_PATH = "news.db"
-HEADERS = {"Authorization": TOKEN}
-
-# ============================================
-#  ЗАЩИТА ОТ ДУБЛЕЙ
-# ============================================
-_SEEN = deque(maxlen=200)
-
-def dedup_key(update: dict) -> tuple:
-    msg = update.get('message', {})
-    body = msg.get('body', {})
-    mid = body.get('mid')
-    return (update.get('update_type'), update.get('timestamp'), mid)
-
-# ============================================
-#  БАЗА ДАННЫХ
-# ============================================
+# =========================================================
+# 3. БАЗА ДАННЫХ
+# =========================================================
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS news (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                full_name TEXT,
-                action_desc TEXT,
-                benefit TEXT,
-                how_came TEXT,
-                place_time TEXT,
-                content TEXT,
-                status TEXT DEFAULT 'pending',
-                feedback TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS news (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            full_name TEXT,
+            action_desc TEXT,
+            benefit TEXT,
+            how_came TEXT,
+            place_time TEXT,
+            content TEXT,
+            status TEXT DEFAULT 'pending',
+            feedback TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# ============================================
-#  ФУНКЦИИ БАЗЫ ДАННЫХ
-# ============================================
+# =========================================================
+# 4. ФУНКЦИИ РАБОТЫ С БД
+# =========================================================
 def save_application(user_id, data):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO news 
-            (user_id, full_name, action_desc, benefit, how_came, place_time, content)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            str(user_id),
-            data.get('full_name', ''),
-            data.get('action_desc', ''),
-            data.get('benefit', ''),
-            data.get('how_came', ''),
-            data.get('place_time', ''),
-            data.get('content', '')
-        ))
-        conn.commit()
-        return c.lastrowid
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO news 
+        (user_id, full_name, action_desc, benefit, how_came, place_time, content)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        str(user_id),
+        data.get('full_name', ''),
+        data.get('action_desc', ''),
+        data.get('benefit', ''),
+        data.get('how_came', ''),
+        data.get('place_time', ''),
+        data.get('content', '')
+    ))
+    conn.commit()
+    app_id = c.lastrowid
+    conn.close()
+    return app_id
 
 def get_application_by_id(app_id):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute('SELECT * FROM news WHERE id = ?', (app_id,))
-        return c.fetchone()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT * FROM news WHERE id = ?', (app_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
 
 def update_status(app_id, status, feedback=''):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute('UPDATE news SET status = ?, feedback = ? WHERE id = ?', (status, feedback, app_id))
-        conn.commit()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE news SET status = ?, feedback = ? WHERE id = ?', (status, feedback, app_id))
+    conn.commit()
+    conn.close()
 
 def get_pending_applications():
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute('SELECT * FROM news WHERE status = "pending" ORDER BY created_at ASC')
-        return c.fetchall()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT * FROM news WHERE status = "pending" ORDER BY created_at ASC')
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 def get_stats():
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
-        pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"').fetchone()[0]
-        approved = c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"').fetchone()[0]
-        rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
-        return total, pending, approved, rejected
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
+    pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"').fetchone()[0]
+    approved = c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"').fetchone()[0]
+    rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
+    conn.close()
+    return total, pending, approved, rejected
 
-# ============================================
-#  ХРАНИЛИЩЕ СОСТОЯНИЙ ПОЛЬЗОВАТЕЛЕЙ
-# ============================================
-user_states = {}
+# =========================================================
+# 5. МАШИНА СОСТОЯНИЙ (FSM)
+# =========================================================
+class NewsStates(StatesGroup):
+    waiting_full_name = State()
+    waiting_action = State()
+    waiting_benefit = State()
+    waiting_how_came = State()
+    waiting_place_time = State()
+    waiting_confirmation = State()
 
-def get_user_state(user_id):
-    return user_states.get(str(user_id))
-
-def set_user_state(user_id, step, data=None):
-    if data is None:
-        data = {}
-    user_states[str(user_id)] = {'step': step, 'data': data}
-
-def clear_user_state(user_id):
-    user_states.pop(str(user_id), None)
-
-# ============================================
-#  ВОПРОСЫ ДЛЯ ОПРОСА
-# ============================================
+# =========================================================
+# 6. ВОПРОСЫ
+# =========================================================
 QUESTIONS = [
     ('full_name', 'Вопрос 1 из 5. Ваше полное имя (ФИО)?'),
     ('action_desc', 'Вопрос 2 из 5. Опишите суть события или действия.'),
@@ -141,54 +149,124 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ============================================
-#  ОТПРАВКА СООБЩЕНИЙ (GET — единственный рабочий метод)
-# ============================================
-def send_message_safe(recipient_id: int, text: str, retries: int = 3) -> bool:
-    """
-    Отправляет сообщение через GET /messages.
-    ВНИМАНИЕ: Этот метод возвращает историю чата, а не подтверждение отправки.
-    Если сообщение не доставляется, попробуйте использовать POST с библиотекой maxapi.
-    """
-    url = f"{API_BASE}/messages"
-    params = {'chat_id': recipient_id, 'text': text}
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=20, verify=False)
-            logging.info(f"📤 GET на {recipient_id}: статус {resp.status_code}, ответ: {resp.text[:300]}")
-            if resp.status_code == 200:
-                logging.info(f"✅ GET успешно выполнен для {recipient_id}")
-                return True
-            else:
-                logging.error(f"❌ Ошибка GET на {recipient_id}: {resp.status_code} - {resp.text}")
-                return False
-        except Exception as e:
-            logging.error(f"❌ Исключение: {e}")
-            time.sleep(1)
-    return False
+# =========================================================
+# 7. ИНИЦИАЛИЗАЦИЯ БОТА И ДИСПЕТЧЕРА
+# =========================================================
+bot = Bot(token=TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
-# ============================================
-#  ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ
-# ============================================
-def get_updates(marker=None):
-    url = f"{API_BASE}/updates"
-    params = {"timeout": 30, "limit": 100}
-    if marker is not None:
-        params["marker"] = marker
-    try:
-        resp = requests.get(url, headers={"Authorization": TOKEN}, params=params, timeout=40, verify=False)
-        if resp.status_code == 200:
-            return resp.json()
-        logging.error(f"❌ Ошибка получения обновлений: {resp.status_code}")
-        return {}
-    except Exception as e:
-        logging.error(f"❌ Исключение при получении: {e}")
-        return {}
+# =========================================================
+# 8. ОБРАБОТЧИКИ КОМАНД
+# =========================================================
+@dp.message_created(CommandStart())
+async def cmd_start(event: Message, state: StateContext):
+    await state.clear()
+    await event.message.answer(
+        "👋 Привет! Я бот для подачи новостей.\n"
+        "Чтобы начать, отправьте /news\n"
+        "Для справки используйте /help"
+    )
 
-# ============================================
-#  УВЕДОМЛЕНИЕ АДМИНИСТРАТОРОВ
-# ============================================
-def notify_admins(app_id, data):
+@dp.message_created(Command(commands=['help']))
+async def cmd_help(event: Message):
+    await event.message.answer(
+        "📖 Доступные команды:\n"
+        "/start — начать работу\n"
+        "/news — подать новость\n"
+        "/cancel — отменить текущую заявку\n"
+        "/id — показать ваш ID\n\n"
+        "Для администраторов:\n"
+        "/pending — список заявок\n"
+        "/approve <id> [комментарий] — одобрить\n"
+        "/reject <id> [комментарий] — отклонить\n"
+        "/stats — статистика"
+    )
+
+@dp.message_created(Command(commands=['id']))
+async def cmd_id(event: Message):
+    await event.message.answer(f"Ваш ID: {event.from_.id} | Chat ID: {event.chat.id}")
+
+@dp.message_created(Command(commands=['cancel']))
+async def cmd_cancel(event: Message, state: StateContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await event.message.answer("Нет активной заявки для отмены.")
+        return
+    await state.clear()
+    await event.message.answer("✅ Заявка отменена.")
+
+# =========================================================
+# 9. ОПРОС (/news)
+# =========================================================
+@dp.message_created(Command(commands=['news']))
+async def cmd_news(event: Message, state: StateContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        await event.message.answer("У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
+        return
+    await state.set_state(NewsStates.waiting_full_name)
+    await event.message.answer(QUESTIONS[0][1])
+
+@dp.message_created(NewsStates.waiting_full_name, F.message.body.text)
+async def process_full_name(event: Message, state: StateContext):
+    await state.update_data(full_name=event.message.body.text)
+    await state.set_state(NewsStates.waiting_action)
+    await event.message.answer(QUESTIONS[1][1])
+
+@dp.message_created(NewsStates.waiting_action, F.message.body.text)
+async def process_action(event: Message, state: StateContext):
+    await state.update_data(action_desc=event.message.body.text)
+    await state.set_state(NewsStates.waiting_benefit)
+    await event.message.answer(QUESTIONS[2][1])
+
+@dp.message_created(NewsStates.waiting_benefit, F.message.body.text)
+async def process_benefit(event: Message, state: StateContext):
+    await state.update_data(benefit=event.message.body.text)
+    await state.set_state(NewsStates.waiting_how_came)
+    await event.message.answer(QUESTIONS[3][1])
+
+@dp.message_created(NewsStates.waiting_how_came, F.message.body.text)
+async def process_how_came(event: Message, state: StateContext):
+    await state.update_data(how_came=event.message.body.text)
+    await state.set_state(NewsStates.waiting_place_time)
+    await event.message.answer(QUESTIONS[4][1])
+
+@dp.message_created(NewsStates.waiting_place_time, F.message.body.text)
+async def process_place_time(event: Message, state: StateContext):
+    await state.update_data(place_time=event.message.body.text)
+    data = await state.get_data()
+    summary = (
+        "📋 Проверьте введённые данные:\n\n"
+        f"1. ФИО: {data.get('full_name', '—')}\n"
+        f"2. Суть: {data.get('action_desc', '—')}\n"
+        f"3. Польза: {data.get('benefit', '—')}\n"
+        f"4. Как пришли: {data.get('how_came', '—')}\n"
+        f"5. Место/время: {data.get('place_time', '—')}\n"
+        "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
+    )
+    await state.set_state(NewsStates.waiting_confirmation)
+    await event.message.answer(summary)
+
+@dp.message_created(NewsStates.waiting_confirmation)
+async def process_confirmation(event: Message, state: StateContext):
+    text = event.message.body.text.strip().lower()
+    if text == "да":
+        data = await state.get_data()
+        app_id = save_application(event.from_.id, data)
+        await state.clear()
+        await event.message.answer("✅ Заявка успешно отправлена на модерацию!")
+        await notify_admins(app_id, data)
+    elif text == "нет":
+        await state.clear()
+        await event.message.answer("❌ Заявка отменена.")
+    else:
+        await event.message.answer('Пожалуйста, ответьте "Да" или "Нет".')
+
+# =========================================================
+# 10. УВЕДОМЛЕНИЕ АДМИНОВ
+# =========================================================
+async def notify_admins(app_id, data):
     text = (
         f"📢 Новая заявка #{app_id}\n"
         f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -198,254 +276,102 @@ def notify_admins(app_id, data):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
-        send_message_safe(admin_id, text)
-
-# ============================================
-#  ОБРАБОТКА ВХОДЯЩИХ СООБЩЕНИЙ
-# ============================================
-def handle_message(update):
-    key = dedup_key(update)
-    if key in _SEEN:
-        return
-    _SEEN.append(key)
-
-    message = update.get('message', {})
-    if not message:
-        return
-
-    recipient = message.get('recipient', {})
-    chat_id = recipient.get('chat_id')
-    sender = message.get('sender', {})
-    user_id = sender.get('user_id')
-
-    if not chat_id or not user_id:
-        return
-
-    body = message.get('body', {})
-    text = body.get('text', '').strip()
-
-    if not text:
-        return
-
-    logging.info(f"📩 Получено сообщение от {user_id} (чат {chat_id}): {text[:50]}")
-
-    # === ОБРАБОТКА КОМАНД ===
-    if text.startswith('/'):
-        command_parts = text.split(maxsplit=2)
-        if not command_parts:
-            return
-        command = command_parts[0].lower()
-        is_admin = int(user_id) in ADMIN_IDS
-
-        # --- /help ---
-        if command == '/help':
-            help_text = (
-                "📖 Доступные команды:\n"
-                "/start — начать работу\n"
-                "/news — подать новость\n"
-                "/cancel — отменить текущую заявку\n"
-                "/id — показать ваш ID\n\n"
-                "Для администраторов:\n"
-                "/pending — список заявок\n"
-                "/approve <id> [комментарий] — одобрить\n"
-                "/reject <id> [комментарий] — отклонить\n"
-                "/stats — статистика"
-            )
-            send_message_safe(user_id, help_text)
-            return
-
-        # --- /start ---
-        if command == '/start':
-            if len(command_parts) > 1:
-                param = command_parts[1]
-                send_message_safe(user_id, f"👋 Привет! Вы перешли по ссылке с параметром: {param}")
-            else:
-                send_message_safe(user_id,
-                    "👋 Привет! Я бот для подачи новостей.\n"
-                    "Чтобы начать, отправьте /news\n"
-                    "Для справки используйте /help"
-                )
-            return
-
-        # --- /id ---
-        elif command == '/id':
-            send_message_safe(user_id, f"Ваш ID: {user_id} | Chat ID: {chat_id}")
-            return
-
-        # --- /cancel ---
-        elif command == '/cancel':
-            if get_user_state(user_id) is not None:
-                clear_user_state(user_id)
-                send_message_safe(user_id, "✅ Заявка отменена.")
-            else:
-                send_message_safe(user_id, "Нет активной заявки.")
-            return
-
-        # --- /news ---
-        elif command == '/news':
-            if get_user_state(user_id) is not None:
-                send_message_safe(user_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
-                return
-            set_user_state(user_id, 0)
-            send_message_safe(user_id, QUESTIONS[0][1])
-            return
-
-        # --- /pending ---
-        elif command == '/pending':
-            if not is_admin:
-                send_message_safe(user_id, "⛔ Нет прав.")
-                return
-            rows = get_pending_applications()
-            if not rows:
-                send_message_safe(user_id, "Нет заявок.")
-                return
-            msg = "📋 Ожидающие заявки:\n\n"
-            for row in rows:
-                msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
-            send_message_safe(user_id, msg)
-            return
-
-        # --- /approve ---
-        elif command == '/approve':
-            if not is_admin:
-                send_message_safe(user_id, "⛔ Нет прав.")
-                return
-            if len(command_parts) < 2:
-                send_message_safe(user_id, "Использование: /approve <id> [комментарий]")
-                return
-            try:
-                app_id = int(command_parts[1])
-            except ValueError:
-                send_message_safe(user_id, "ID должен быть числом.")
-                return
-            feedback = command_parts[2] if len(command_parts) > 2 else ""
-            app = get_application_by_id(app_id)
-            if not app:
-                send_message_safe(user_id, f"Заявка #{app_id} не найдена.")
-                return
-            if app[8] != 'pending':
-                send_message_safe(user_id, f"Заявка уже обработана (статус: {app[8]}).")
-                return
-            update_status(app_id, 'approved', feedback)
-            send_message_safe(user_id, f"✅ Заявка #{app_id} одобрена.")
-            try:
-                send_message_safe(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
-            except:
-                pass
-            return
-
-        # --- /reject ---
-        elif command == '/reject':
-            if not is_admin:
-                send_message_safe(user_id, "⛔ Нет прав.")
-                return
-            if len(command_parts) < 2:
-                send_message_safe(user_id, "Использование: /reject <id> [комментарий]")
-                return
-            try:
-                app_id = int(command_parts[1])
-            except ValueError:
-                send_message_safe(user_id, "ID должен быть числом.")
-                return
-            feedback = command_parts[2] if len(command_parts) > 2 else ""
-            app = get_application_by_id(app_id)
-            if not app:
-                send_message_safe(user_id, f"Заявка #{app_id} не найдена.")
-                return
-            if app[8] != 'pending':
-                send_message_safe(user_id, f"Заявка уже обработана (статус: {app[8]}).")
-                return
-            update_status(app_id, 'rejected', feedback)
-            send_message_safe(user_id, f"❌ Заявка #{app_id} отклонена.")
-            try:
-                send_message_safe(int(app[1]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
-            except:
-                pass
-            return
-
-        # --- /stats ---
-        elif command == '/stats':
-            if not is_admin:
-                send_message_safe(user_id, "⛔ Нет прав.")
-                return
-            total, pending, approved, rejected = get_stats()
-            send_message_safe(user_id,
-                f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
-            )
-            return
-
-        else:
-            send_message_safe(user_id, "Неизвестная команда. Используйте /help для справки.")
-            return
-
-    # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА ===
-    state = get_user_state(user_id)
-    if state is None:
-        return
-
-    step = state['step']
-    data = state['data']
-
-    if step == -1:
-        if text.lower() == "да":
-            app_id = save_application(user_id, data)
-            clear_user_state(user_id)
-            send_message_safe(user_id, "✅ Заявка успешно отправлена на модерацию!")
-            notify_admins(app_id, data)
-        elif text.lower() == "нет":
-            clear_user_state(user_id)
-            send_message_safe(user_id, "❌ Заявка отменена.")
-        else:
-            send_message_safe(user_id, 'Пожалуйста, ответьте "Да" или "Нет".')
-        return
-
-    if step < TOTAL_QUESTIONS:
-        field = QUESTIONS[step][0]
-        data[field] = text
-        next_step = step + 1
-        if next_step < TOTAL_QUESTIONS:
-            set_user_state(user_id, next_step, data)
-            send_message_safe(user_id, QUESTIONS[next_step][1])
-        else:
-            set_user_state(user_id, -1, data)
-            summary = (
-                "📋 Проверьте введённые данные:\n\n"
-                f"1. ФИО: {data.get('full_name', '—')}\n"
-                f"2. Суть: {data.get('action_desc', '—')}\n"
-                f"3. Польза: {data.get('benefit', '—')}\n"
-                f"4. Как пришли: {data.get('how_came', '—')}\n"
-                f"5. Место/время: {data.get('place_time', '—')}\n"
-                "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-            )
-            send_message_safe(user_id, summary)
-
-# ============================================
-#  ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ
-# ============================================
-def send_startup_test():
-    for admin_id in ADMIN_IDS:
-        send_message_safe(admin_id, "🚀 Бот запущен и готов к работе!")
-
-# ============================================
-#  ОСНОВНОЙ ЦИКЛ
-# ============================================
-def main():
-    logging.info("🚀 Бот запущен...")
-    send_startup_test()
-    marker = None
-
-    while True:
         try:
-            data = get_updates(marker)
-            for update in data.get('updates', []):
-                if update.get('update_type') != 'message_created':
-                    continue
-                handle_message(update)
-            if data.get('marker') is not None:
-                marker = data['marker']
+            await bot.send_message(chat_id=admin_id, text=text)
         except Exception as e:
-            logging.error(f"❌ Ошибка в цикле: {e}")
-            time.sleep(5)
+            logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+# =========================================================
+# 11. АДМИН-КОМАНДЫ
+# =========================================================
+@dp.message_created(Command(commands=['pending']))
+async def cmd_pending(event: Message):
+    if event.from_.id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    rows = get_pending_applications()
+    if not rows:
+        await event.message.answer("Нет заявок.")
+        return
+    msg = "📋 Ожидающие заявки:\n\n"
+    for row in rows:
+        msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
+    await event.message.answer(msg)
+
+@dp.message_created(Command(commands=['approve']))
+async def cmd_approve(event: Message):
+    if event.from_.id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    args = event.message.body.text.split(maxsplit=2)
+    if len(args) < 2:
+        await event.message.answer("Использование: /approve <id> [комментарий]")
+        return
+    try:
+        app_id = int(args[1])
+    except ValueError:
+        await event.message.answer("ID должен быть числом.")
+        return
+    feedback = args[2] if len(args) > 2 else ""
+    app = get_application_by_id(app_id)
+    if not app:
+        await event.message.answer(f"Заявка #{app_id} не найдена.")
+        return
+    if app[8] != 'pending':
+        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
+        return
+    update_status(app_id, 'approved', feedback)
+    await event.message.answer(f"✅ Заявка #{app_id} одобрена.")
+    try:
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
+    except:
+        pass
+
+@dp.message_created(Command(commands=['reject']))
+async def cmd_reject(event: Message):
+    if event.from_.id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    args = event.message.body.text.split(maxsplit=2)
+    if len(args) < 2:
+        await event.message.answer("Использование: /reject <id> [комментарий]")
+        return
+    try:
+        app_id = int(args[1])
+    except ValueError:
+        await event.message.answer("ID должен быть числом.")
+        return
+    feedback = args[2] if len(args) > 2 else ""
+    app = get_application_by_id(app_id)
+    if not app:
+        await event.message.answer(f"Заявка #{app_id} не найдена.")
+        return
+    if app[8] != 'pending':
+        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
+        return
+    update_status(app_id, 'rejected', feedback)
+    await event.message.answer(f"❌ Заявка #{app_id} отклонена.")
+    try:
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
+    except:
+        pass
+
+@dp.message_created(Command(commands=['stats']))
+async def cmd_stats(event: Message):
+    if event.from_.id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    total, pending, approved, rejected = get_stats()
+    await event.message.answer(
+        f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
+    )
+
+# =========================================================
+# 12. ЗАПУСК
+# =========================================================
+async def main():
+    logger.info("🚀 Бот запущен...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
