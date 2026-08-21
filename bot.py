@@ -1,12 +1,11 @@
 import os
-import sys
 import asyncio
 import logging
 import sqlite3
 from datetime import datetime
 
 # =========================================================
-# 0. АВТОУСТАНОВКА maxapi (если отсутствует)
+# 1. ПРОВЕРКА НАЛИЧИЯ maxapi
 # =========================================================
 try:
     from maxapi import Bot, Dispatcher, F
@@ -14,16 +13,13 @@ try:
     from maxapi.types import Message
     from maxapi.fsm import State, StatesGroup, MemoryStorage, StateContext
 except ImportError:
-    print("📦 Устанавливаем библиотеку maxapi...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "maxapi", "--user"])
-    from maxapi import Bot, Dispatcher, F
-    from maxapi.filters.command import CommandStart, Command
-    from maxapi.types import Message
-    from maxapi.fsm import State, StatesGroup, MemoryStorage, StateContext
+    print("❌ Библиотека maxapi не установлена!")
+    print("Установите её вручную командой: pip install maxapi")
+    print("Если вы используете виртуальное окружение, активируйте его перед установкой.")
+    exit(1)
 
 # =========================================================
-# 1. КОНФИГУРАЦИЯ
+# 2. КОНФИГУРАЦИЯ
 # =========================================================
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -35,7 +31,7 @@ ADMIN_IDS = [364551480]   # Замените на свой user_id
 DB_PATH = "news.db"
 
 # =========================================================
-# 2. НАСТРОЙКА ЛОГИРОВАНИЯ
+# 3. НАСТРОЙКА ЛОГИРОВАНИЯ
 # =========================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =========================================================
-# 3. БАЗА ДАННЫХ
+# 4. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -70,7 +66,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 4. ФУНКЦИИ РАБОТЫ С БД
+# 5. ФУНКЦИИ РАБОТЫ С БД
 # =========================================================
 def save_application(user_id, data):
     conn = sqlite3.connect(DB_PATH)
@@ -127,7 +123,7 @@ def get_stats():
     return total, pending, approved, rejected
 
 # =========================================================
-# 5. МАШИНА СОСТОЯНИЙ (FSM)
+# 6. МАШИНА СОСТОЯНИЙ (FSM)
 # =========================================================
 class NewsStates(StatesGroup):
     waiting_full_name = State()
@@ -138,7 +134,7 @@ class NewsStates(StatesGroup):
     waiting_confirmation = State()
 
 # =========================================================
-# 6. ВОПРОСЫ
+# 7. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Вопрос 1 из 5. Ваше полное имя (ФИО)?'),
@@ -150,14 +146,14 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # =========================================================
-# 7. ИНИЦИАЛИЗАЦИЯ БОТА И ДИСПЕТЧЕРА
+# 8. ИНИЦИАЛИЗАЦИЯ БОТА И ДИСПЕТЧЕРА
 # =========================================================
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # =========================================================
-# 8. ОБРАБОТЧИКИ КОМАНД
+# 9. ОБРАБОТЧИКИ КОМАНД
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event: Message, state: StateContext):
@@ -197,7 +193,7 @@ async def cmd_cancel(event: Message, state: StateContext):
     await event.message.answer("✅ Заявка отменена.")
 
 # =========================================================
-# 9. ОПРОС (/news)
+# 10. ОПРОС (/news)
 # =========================================================
 @dp.message_created(Command(commands=['news']))
 async def cmd_news(event: Message, state: StateContext):
@@ -264,7 +260,7 @@ async def process_confirmation(event: Message, state: StateContext):
         await event.message.answer('Пожалуйста, ответьте "Да" или "Нет".')
 
 # =========================================================
-# 10. УВЕДОМЛЕНИЕ АДМИНОВ
+# 11. УВЕДОМЛЕНИЕ АДМИНОВ
 # =========================================================
 async def notify_admins(app_id, data):
     text = (
@@ -282,7 +278,7 @@ async def notify_admins(app_id, data):
             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
 
 # =========================================================
-# 11. АДМИН-КОМАНДЫ
+# 12. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event: Message):
@@ -367,7 +363,7 @@ async def cmd_stats(event: Message):
     )
 
 # =========================================================
-# 12. ЗАПУСК
+# 13. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
