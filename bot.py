@@ -14,18 +14,18 @@ logging.basicConfig(
 )
 
 # ===== КОНФИГУРАЦИЯ =====
-API_BASE = "https://platform-api.max.ru"  # Правильный URL из статьи
+API_BASE = "https://platform-api.max.ru"  # или platform-api2.max.ru
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logging.warning("⚠️ Токен взят из кода (только для теста)")
 
-ADMIN_IDS = [364551480]  # Ваш user_id (используется для проверки прав)
+ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
-HEADERS = {"Authorization": TOKEN, "Content-Type": "application/json"}
+HEADERS = {"Authorization": TOKEN}  # Без Content-Type для GET
 
 # ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ =====
-admin_chat_ids = {}  # {user_id: chat_id}
+admin_chat_ids = {}
 
 # ===== ЗАЩИТА ОТ ДУБЛЕЙ =====
 _SEEN = deque(maxlen=200)
@@ -130,14 +130,13 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (GET — РАБОТАЕТ) =====
 def send_message_safe(chat_id: int, text: str, retries: int = 3) -> bool:
-    """Отправляет сообщение через POST /messages с обработкой лимитов (429)."""
     url = f"{API_BASE}/messages"
-    body = {"chat_id": chat_id, "text": text}
+    params = {'chat_id': chat_id, 'text': text}
     for attempt in range(retries):
         try:
-            resp = requests.post(url, headers=HEADERS, json=body, timeout=20, verify=False)
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=20, verify=False)
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", 5))
                 logging.warning("⚠️ Ограничение частоты (429). Ожидание %s сек...", wait)
@@ -170,7 +169,7 @@ def get_updates(marker=None):
         logging.error(f"❌ Исключение при получении: {e}")
         return {}
 
-# ===== УВЕДОМЛЕНИЕ АДМИНОВ (ИСПРАВЛЕНО) =====
+# ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
 def notify_admins(app_id, data):
     text = (
         f"📢 Новая заявка #{app_id}\n"
@@ -181,14 +180,11 @@ def notify_admins(app_id, data):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
-        # Используем сохранённый chat_id администратора, если есть
         chat_id = admin_chat_ids.get(admin_id)
         if chat_id:
             send_message_safe(chat_id, text)
         else:
-            # Если chat_id не сохранён, пробуем отправить на user_id (может не работать)
-            logging.warning(f"⚠️ Chat_id для администратора {admin_id} не найден. Пробуем отправить на user_id.")
-            send_message_safe(admin_id, text)
+            logging.warning(f"⚠️ Chat_id для администратора {admin_id} не найден. Пропускаем уведомление.")
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
