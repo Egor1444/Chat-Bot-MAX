@@ -4,120 +4,117 @@ import logging
 import sqlite3
 import requests
 import urllib3
-from datetime import datetime
 
+# Отключаем предупреждения об отсутствии SSL-проверки (если на хостинге не установлены корни Минцифры)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# ТОКЕН: ИСКЛЮЧИТЕЛЬНО ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
-    TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
+    logging.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная окружения BOT_TOKEN не задана на хостинге!")
+    raise RuntimeError("Задайте BOT_TOKEN в настройках окружения хостинга.")
 
-logging.basicConfig(level=logging.INFO)
-logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
+logging.info(f"🔑 Токен инициализирован (длина: {len(TOKEN)})")
 
 API_BASE = "https://platform-api2.max.ru"
-ADMIN_IDS = [364551480]  # Ваш user_id
+ADMIN_IDS = [364551480]  # Ваш user_id (оставляем int)
+DB_PATH = "news.db"
+
+# ИНДЕКСЫ СТОЛБЦОВ ТАБЛИЦЫ БД (для безопасного извлечения)
+# id(0), user_id(1), full_name(2), action_desc(3), benefit(4), how_came(5), place_time(6), content(7), status(8), feedback(9)
+IDX_USER_ID = 1
+IDX_STATUS = 8
+IDX_FEEDBACK = 9
 
 def check_auth():
     url = f"{API_BASE}/me"
-    headers = {'Authorization': TOKEN}
+    headers = {'Authorization': TOKEN}  # Без Bearer согласно документации MAX
     try:
         resp = requests.get(url, headers=headers, timeout=5, verify=False)
         if resp.status_code == 200:
-            logging.info("✅ Авторизация успешна!")
+            logging.info("✅ Авторизация на platform-api2 успешна!")
             return True
-        else:
-            logging.error(f"❌ Ошибка авторизации: {resp.status_code} - {resp.text}")
-            return False
+        logging.error(f"❌ Ошибка авторизации: {resp.status_code} - {resp.text}")
+        return False
     except Exception as e:
-        logging.error(f"❌ Ошибка подключения: {e}")
+        logging.error(f"❌ Ошибка подключения при авторизации: {e}")
         return False
 
 if not check_auth():
-    raise RuntimeError("❌ Не удалось авторизоваться. Проверьте токен.")
-
-DB_PATH = "news.db"
+    raise RuntimeError("❌ Не удалось авторизоваться в системе MAX API.")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS news (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            full_name TEXT,
-            action_desc TEXT,
-            benefit TEXT,
-            how_came TEXT,
-            place_time TEXT,
-            content TEXT,
-            status TEXT DEFAULT 'pending',
-            feedback TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                full_name TEXT,
+                action_desc TEXT,
+                benefit TEXT,
+                how_came TEXT,
+                place_time TEXT,
+                content TEXT,
+                status TEXT DEFAULT 'pending',
+                feedback TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
 
 init_db()
 
 def save_application(user_id, data):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO news 
-        (user_id, full_name, action_desc, benefit, how_came, place_time, content)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        user_id,
-        data.get('full_name', ''),
-        data.get('action_desc', ''),
-        data.get('benefit', ''),
-        data.get('how_came', ''),
-        data.get('place_time', ''),
-        data.get('content', '')
-    ))
-    conn.commit()
-    app_id = c.lastrowid
-    conn.close()
-    return app_id
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO news 
+            (user_id, full_name, action_desc, benefit, how_came, place_time, content)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            str(user_id),
+            data.get('full_name', ''),
+            data.get('action_desc', ''),
+            data.get('benefit', ''),
+            data.get('how_came', ''),
+            data.get('place_time', ''),
+            data.get('content', '')
+        ))
+        conn.commit()
+        return c.lastrowid
 
 def get_application_by_id(app_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT * FROM news WHERE id = ?', (app_id,))
-    row = c.fetchone()
-    conn.close()
-    return row
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM news WHERE id = ?', (app_id,))
+        return c.fetchone()
 
 def update_status(app_id, status, feedback=''):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE news SET status = ?, feedback = ? WHERE id = ?', (status, feedback, app_id))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('UPDATE news SET status = ?, feedback = ? WHERE id = ?', (status, feedback, app_id))
+        conn.commit()
 
 def get_pending_applications():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT * FROM news WHERE status = "pending" ORDER BY created_at ASC')
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM news WHERE status = "pending" ORDER BY created_at ASC')
+        return c.fetchall()
 
 def get_stats():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM news')
-    total = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"')
-    pending = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"')
-    approved = c.fetchone()[0]
-    c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"')
-    rejected = c.fetchone()[0]
-    conn.close()
-    return total, pending, approved, rejected
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
+        pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"').fetchone()[0]
+        approved = c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"').fetchone()[0]
+        rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
+        return total, pending, approved, rejected
 
 user_states = {}
 
@@ -141,21 +138,28 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (ТОЛЬКО НА РАБОЧИЙ ID) =====
+# ===== ИСПРАВЛЕННЫЙ МЕТОД ОТПРАВКИ СООБЩЕНИЙ (Использует POST + JSON) =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
-    headers = {'Authorization': TOKEN}
-    params = {'chat_id': str(recipient_id), 'text': text}
+    headers = {
+        'Authorization': TOKEN,
+        'Content-Type': 'application/json'
+    }
+    # Данные передаются внутри тела в json-формате
+    payload = {
+        'chat_id': str(recipient_id),
+        'text': text
+    }
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
-        if resp.status_code == 200:
-            logging.info(f"✅ Отправлено на {recipient_id}")
+        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+        if resp.status_code in [200, 201]:
+            logging.info(f"✅ Успешно доставлено в чат {recipient_id}")
             return True
         else:
-            logging.error(f"❌ Ошибка отправки на {recipient_id}: {resp.status_code} - {resp.text}")
+            logging.error(f"❌ Ошибка доставки на {recipient_id}: {resp.status_code} - {resp.text}")
             return False
     except Exception as e:
-        logging.error(f"❌ Исключение при отправке: {e}")
+        logging.error(f"❌ Исключение при вызове POST /messages: {e}")
         return False
 
 # ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
@@ -168,13 +172,11 @@ def get_updates(offset=None):
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=35, verify=False)
         if resp.status_code == 200:
-            data = resp.json()
-            return data.get('updates', [])
-        else:
-            logging.error(f"❌ Ошибка получения обновлений: {resp.status_code} - {resp.text}")
-            return []
+            return resp.json().get('updates', [])
+        logging.error(f"❌ Ошибка получения обновлений: {resp.status_code} - {resp.text}")
+        return []
     except Exception as e:
-        logging.error(f"❌ Исключение при получении: {e}")
+        logging.error(f"❌ Исключение при Long Polling: {e}")
         return []
 
 def notify_admins(app_id, data):
@@ -200,19 +202,22 @@ def handle_message(update):
     user_id = str(sender.get('user_id', ''))
 
     if not chat_id or not user_id:
-        logging.warning("❌ Нет chat_id или user_id в сообщении")
         return
 
     body = message.get('body', {})
-    text = body.get('text', '')
+    text = body.get('text', '').strip()
 
     if not text:
         return
 
-    logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
+    logging.info(f"📩 Обрабатываем сообщение от {user_id} в чате {chat_id}")
 
+    # Обработка команд
     if text.startswith('/'):
-        command = text.split()[0].lower()
+        command_parts = text.split(maxsplit=2)
+        command = command_parts[0].lower()
+        is_admin = int(user_id) in ADMIN_IDS
+
         if command == '/start':
             send_message(chat_id,
                 "👋 Привет! Я бот для подачи новостей.\n"
@@ -228,21 +233,21 @@ def handle_message(update):
             send_message(chat_id, f"Ваш ID: {user_id}")
             return
         elif command == '/cancel':
-            if user_id in user_states:
+            if get_user_state(user_id) is not None:
                 clear_user_state(user_id)
                 send_message(chat_id, "✅ Заявка отменена.")
             else:
-                send_message(chat_id, "Нет активной заявки.")
+                send_message(chat_id, "У вас нет активной заявки.")
             return
         elif command == '/news':
-            if user_id in user_states:
+            if get_user_state(user_id) is not None:
                 send_message(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
                 return
             set_user_state(user_id, 0)
             send_message(chat_id, QUESTIONS[0][1])
             return
         elif command == '/pending':
-            if int(user_id) not in ADMIN_IDS:
+            if not is_admin:
                 send_message(chat_id, "⛔ Нет прав.")
                 return
             rows = get_pending_applications()
@@ -251,137 +256,24 @@ def handle_message(update):
                 return
             msg = "📋 Ожидающие заявки:\n\n"
             for row in rows:
-                msg += f"ID: {row[0]}, {row[2]}, {row[-1]}\n"
+                msg += f"ID: {row[0]}, Имя: {row[2]}, Создано: {row[-1]}\n"
             send_message(chat_id, msg)
             return
-        elif command == '/approve':
-            if int(user_id) not in ADMIN_IDS:
+        elif command in ['/approve', '/reject']:
+            if not is_admin:
                 send_message(chat_id, "⛔ Нет прав.")
                 return
-            args = text.split(maxsplit=2)
-            if len(args) < 2:
-                send_message(chat_id, "Использование: /approve <id> [комментарий]")
+            if len(command_parts) < 2:
+                send_message(chat_id, f"Использование: {command} <id> [комментарий]")
                 return
             try:
-                app_id = int(args[1])
+                app_id = int(command_parts[1])
             except ValueError:
                 send_message(chat_id, "ID должен быть числом.")
                 return
-            feedback = args[2] if len(args) > 2 else ""
+            
+            feedback = command_parts[2] if len(command_parts) > 2 else ""
             app = get_application_by_id(app_id)
             if not app:
                 send_message(chat_id, f"Заявка #{app_id} не найдена.")
                 return
-            if app[9] != 'pending':
-                send_message(chat_id, f"Заявка уже обработана (статус: {app[9]}).")
-                return
-            update_status(app_id, 'approved', feedback)
-            send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            try:
-                send_message(str(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
-            except:
-                pass
-            return
-        elif command == '/reject':
-            if int(user_id) not in ADMIN_IDS:
-                send_message(chat_id, "⛔ Нет прав.")
-                return
-            args = text.split(maxsplit=2)
-            if len(args) < 2:
-                send_message(chat_id, "Использование: /reject <id> [комментарий]")
-                return
-            try:
-                app_id = int(args[1])
-            except ValueError:
-                send_message(chat_id, "ID должен быть числом.")
-                return
-            feedback = args[2] if len(args) > 2 else ""
-            app = get_application_by_id(app_id)
-            if not app:
-                send_message(chat_id, f"Заявка #{app_id} не найдена.")
-                return
-            if app[9] != 'pending':
-                send_message(chat_id, f"Заявка уже обработана (статус: {app[9]}).")
-                return
-            update_status(app_id, 'rejected', feedback)
-            send_message(chat_id, f"❌ Заявка #{app_id} отклонена.")
-            try:
-                send_message(str(app[1]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
-            except:
-                pass
-            return
-        elif command == '/stats':
-            if int(user_id) not in ADMIN_IDS:
-                send_message(chat_id, "⛔ Нет прав.")
-                return
-            total, pending, approved, rejected = get_stats()
-            send_message(
-                chat_id,
-                f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
-            )
-            return
-        else:
-            send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
-            return
-
-    state = get_user_state(user_id)
-    if state is None:
-        return
-
-    step = state['step']
-    data = state['data']
-
-    if step == -1:
-        if text.lower() == "да":
-            app_id = save_application(user_id, data)
-            clear_user_state(user_id)
-            send_message(chat_id, "✅ Заявка успешно отправлена на модерацию!")
-            notify_admins(app_id, data)
-        elif text.lower() == "нет":
-            clear_user_state(user_id)
-            send_message(chat_id, "❌ Заявка отменена.")
-        else:
-            send_message(chat_id, 'Пожалуйста, ответьте "Да" или "Нет".')
-        return
-
-    if step < TOTAL_QUESTIONS:
-        field = QUESTIONS[step][0]
-        data[field] = text
-        next_step = step + 1
-        if next_step < TOTAL_QUESTIONS:
-            set_user_state(user_id, next_step, data)
-            send_message(chat_id, QUESTIONS[next_step][1])
-        else:
-            set_user_state(user_id, -1, data)
-            summary = (
-                "📋 Проверьте введённые данные:\n\n"
-                f"1. ФИО: {data.get('full_name', '—')}\n"
-                f"2. Суть: {data.get('action_desc', '—')}\n"
-                f"3. Польза: {data.get('benefit', '—')}\n"
-                f"4. Как пришли: {data.get('how_came', '—')}\n"
-                f"5. Место/время: {data.get('place_time', '—')}\n"
-                "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-            )
-            send_message(chat_id, summary)
-
-def main():
-    logging.info("🚀 Бот запущен...")
-    last_marker = 0
-
-    while True:
-        try:
-            updates = get_updates(offset=last_marker + 1)
-            for update in updates:
-                if update.get('update_type') != 'message_created':
-                    continue
-                handle_message(update)
-                if 'marker' in update:
-                    last_marker = update['marker']
-                else:
-                    last_marker += 1
-        except Exception as e:
-            logging.error(f"❌ Ошибка в цикле: {e}")
-        time.sleep(1)
-
-if __name__ == "__main__":
-    main()
