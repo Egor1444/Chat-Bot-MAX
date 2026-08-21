@@ -22,7 +22,7 @@ if not TOKEN:
 
 ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
-HEADERS = {"Authorization": TOKEN}  # Без Content-Type для GET
+HEADERS = {"Authorization": TOKEN}
 
 # ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ =====
 admin_chat_ids = {}
@@ -130,7 +130,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET — РАБОТАЕТ) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (GET — рабочий) =====
 def send_message_safe(chat_id: int, text: str, retries: int = 3) -> bool:
     url = f"{API_BASE}/messages"
     params = {'chat_id': chat_id, 'text': text}
@@ -184,7 +184,7 @@ def notify_admins(app_id, data):
         if chat_id:
             send_message_safe(chat_id, text)
         else:
-            logging.warning(f"⚠️ Chat_id для администратора {admin_id} не найден. Пропускаем уведомление.")
+            logging.warning(f"⚠️ Chat_id для администратора {admin_id} не найден. Уведомление пропущено.")
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
@@ -223,24 +223,45 @@ def handle_message(update):
         command_parts = text.split(maxsplit=2)
         if not command_parts:
             return
-            
         command = command_parts[0].lower()
         is_admin = int(user_id) in ADMIN_IDS
 
-        if command == '/start':
-            send_message_safe(chat_id,
-                "👋 Привет! Я бот для подачи новостей.\n"
-                "Чтобы начать, отправьте /news\n\n"
-                "Администратор:\n"
+        # --- /help ---
+        if command == '/help':
+            help_text = (
+                "📖 Доступные команды:\n"
+                "/start — начать работу\n"
+                "/news — подать новость\n"
+                "/cancel — отменить текущую заявку\n"
+                "/id — показать ваш ID\n\n"
+                "Для администраторов:\n"
                 "/pending — список заявок\n"
-                "/approve <id> [комментарий]\n"
-                "/reject <id> [комментарий]\n"
+                "/approve <id> [комментарий] — одобрить\n"
+                "/reject <id> [комментарий] — отклонить\n"
                 "/stats — статистика"
             )
+            send_message_safe(chat_id, help_text)
             return
+
+        # --- /start с параметром (deep link) ---
+        if command == '/start':
+            if len(command_parts) > 1:
+                param = command_parts[1]
+                send_message_safe(chat_id, f"👋 Привет! Вы перешли по ссылке с параметром: {param}")
+            else:
+                send_message_safe(chat_id,
+                    "👋 Привет! Я бот для подачи новостей.\n"
+                    "Чтобы начать, отправьте /news\n"
+                    "Для справки используйте /help"
+                )
+            return
+
+        # --- /id ---
         elif command == '/id':
             send_message_safe(chat_id, f"Ваш ID: {user_id} | Chat ID: {chat_id}")
             return
+
+        # --- /cancel ---
         elif command == '/cancel':
             if get_user_state(user_id) is not None:
                 clear_user_state(user_id)
@@ -248,6 +269,8 @@ def handle_message(update):
             else:
                 send_message_safe(chat_id, "Нет активной заявки.")
             return
+
+        # --- /news ---
         elif command == '/news':
             if get_user_state(user_id) is not None:
                 send_message_safe(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
@@ -255,6 +278,8 @@ def handle_message(update):
             set_user_state(user_id, 0)
             send_message_safe(chat_id, QUESTIONS[0][1])
             return
+
+        # --- /pending ---
         elif command == '/pending':
             if not is_admin:
                 send_message_safe(chat_id, "⛔ Нет прав.")
@@ -268,6 +293,8 @@ def handle_message(update):
                 msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
             send_message_safe(chat_id, msg)
             return
+
+        # --- /approve ---
         elif command == '/approve':
             if not is_admin:
                 send_message_safe(chat_id, "⛔ Нет прав.")
@@ -290,11 +317,14 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message_safe(chat_id, f"✅ Заявка #{app_id} одобрена.")
+            # Уведомление пользователя
             try:
                 send_message_safe(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
                 pass
             return
+
+        # --- /reject ---
         elif command == '/reject':
             if not is_admin:
                 send_message_safe(chat_id, "⛔ Нет прав.")
@@ -322,6 +352,8 @@ def handle_message(update):
             except:
                 pass
             return
+
+        # --- /stats ---
         elif command == '/stats':
             if not is_admin:
                 send_message_safe(chat_id, "⛔ Нет прав.")
@@ -332,8 +364,9 @@ def handle_message(update):
                 f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
             )
             return
+
         else:
-            send_message_safe(chat_id, "Неизвестная команда. Используйте /start для справки.")
+            send_message_safe(chat_id, "Неизвестная команда. Используйте /help для справки.")
             return
 
     # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА ===
