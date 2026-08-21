@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 
 # ===== КОНФИГУРАЦИЯ =====
-API_BASE = "https://platform-api.max.ru"  # или platform-api2.max.ru
+API_BASE = "https://platform-api.max.ru"
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -22,9 +22,9 @@ if not TOKEN:
 
 ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
-HEADERS = {"Authorization": TOKEN}  # Для GET не нужен Content-Type
+HEADERS = {"Authorization": TOKEN}
 
-# ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ (не используется, но оставим) =====
+# ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ (для справки) =====
 admin_chat_ids = {}
 
 # ===== ЗАЩИТА ОТ ДУБЛЕЙ =====
@@ -130,13 +130,8 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (ТОЛЬКО GET, ТОЛЬКО РАБОТАЕТ) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (GET + user_id) =====
 def send_message_safe(recipient_id: int, text: str, retries: int = 3) -> bool:
-    """
-    Отправляет сообщение через GET /messages с параметрами.
-    recipient_id должен быть числом (user_id или chat_id).
-    В вашем случае работает только user_id.
-    """
     url = f"{API_BASE}/messages"
     params = {'chat_id': recipient_id, 'text': text}
     for attempt in range(retries):
@@ -186,7 +181,6 @@ def notify_admins(app_id, data):
         f"Место/время: {data.get('place_time', 'не указано')}"
     )
     for admin_id in ADMIN_IDS:
-        # Отправляем на user_id администратора (это работает)
         send_message_safe(admin_id, text)
 
 # ===== ОБРАБОТКА СООБЩЕНИЙ =====
@@ -201,14 +195,13 @@ def handle_message(update):
         return
 
     recipient = message.get('recipient', {})
-    chat_id = recipient.get('chat_id')  # не используется для отправки
+    chat_id = recipient.get('chat_id')
     sender = message.get('sender', {})
     user_id = sender.get('user_id')
 
     if not chat_id or not user_id:
         return
 
-    # Сохраняем chat_id администратора (для справки)
     if int(user_id) in ADMIN_IDS:
         admin_chat_ids[int(user_id)] = chat_id
         logging.info(f"👤 Сохранён chat_id администратора {user_id}: {chat_id}")
@@ -231,7 +224,7 @@ def handle_message(update):
 
         # --- /help ---
         if command == '/help':
-            help_text = (
+            send_message_safe(user_id,
                 "📖 Доступные команды:\n"
                 "/start — начать работу\n"
                 "/news — подать новость\n"
@@ -243,10 +236,9 @@ def handle_message(update):
                 "/reject <id> [комментарий] — отклонить\n"
                 "/stats — статистика"
             )
-            send_message_safe(user_id, help_text)  # отправляем на user_id
             return
 
-        # --- /start с параметром ---
+        # --- /start ---
         if command == '/start':
             if len(command_parts) > 1:
                 param = command_parts[1]
@@ -320,7 +312,6 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message_safe(user_id, f"✅ Заявка #{app_id} одобрена.")
-            # Уведомляем автора заявки
             try:
                 send_message_safe(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
@@ -362,8 +353,7 @@ def handle_message(update):
                 send_message_safe(user_id, "⛔ Нет прав.")
                 return
             total, pending, approved, rejected = get_stats()
-            send_message_safe(
-                user_id,
+            send_message_safe(user_id,
                 f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
             )
             return
