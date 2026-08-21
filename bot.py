@@ -5,6 +5,7 @@ import sqlite3
 import requests
 import urllib3
 
+# Отключаем предупреждения об отсутствии SSL-проверки
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(
@@ -12,7 +13,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# ===== ТОКЕН =====
+# ===== ТОКЕН ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -144,7 +145,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET — РАБОТАЕТ) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (GET — ТОЛЬКО ТАК РАБОТАЕТ!) =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
@@ -191,7 +192,7 @@ def notify_admins(app_id, data):
     for admin_id in ADMIN_IDS:
         send_message(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ (ПОЛНАЯ) =====
+# ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
     message = update.get('message', {})
     if not message:
@@ -328,7 +329,7 @@ def handle_message(update):
             send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
-    # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА (ЭТО БЫЛО ПРОПУЩЕНО!) ===
+    # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА ===
     state = get_user_state(user_id)
     if state is None:
         return
@@ -371,8 +372,9 @@ def handle_message(update):
             )
             send_message(chat_id, summary)
 
-# ===== ТЕСТОВАЯ ОТПРАВКА =====
+# ===== ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ =====
 def send_startup_test():
+    logging.info("📤 Отправка тестового сообщения...")
     for admin_id in ADMIN_IDS:
         send_message(admin_id, "🚀 Бот запущен и готов к работе!")
 
@@ -380,7 +382,7 @@ def send_startup_test():
 def main():
     logging.info("🚀 Бот запущен...")
     send_startup_test()
-
+    
     last_marker = 0
     while True:
         try:
