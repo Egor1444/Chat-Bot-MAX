@@ -12,7 +12,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# ===== ТОКЕН ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
+# ===== ТОКЕН =====
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -20,7 +20,7 @@ if not TOKEN:
 
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
-# ===== БАЗОВЫЙ URL (ИСПРАВЛЕНО!) =====
+# ===== БАЗОВЫЙ URL =====
 API_BASE = "https://platform-api2.max.ru"
 
 # ===== ID АДМИНИСТРАТОРА =====
@@ -144,7 +144,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET — работает!) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
@@ -217,6 +217,9 @@ def handle_message(update):
 
     logging.info(f"📩 Получено сообщение от {user_id} в чат {chat_id}: {text[:50]}")
 
+    # !!! ИСПРАВЛЕНО: используем user_id для ответа (прямой диалог с пользователем) !!!
+    target_id = user_id
+
     # === ОБРАБОТКА КОМАНД ===
     if text.startswith('/'):
         command_parts = text.split(maxsplit=2)
@@ -224,7 +227,7 @@ def handle_message(update):
         is_admin = int(user_id) in ADMIN_IDS
 
         if command == '/start':
-            send_message(chat_id,
+            send_message(target_id,
                 "👋 Привет! Я бот для подачи новостей.\n"
                 "Чтобы начать, отправьте /news\n\n"
                 "Администратор:\n"
@@ -235,57 +238,57 @@ def handle_message(update):
             )
             return
         elif command == '/id':
-            send_message(chat_id, f"Ваш ID: {user_id} | Chat ID: {chat_id}")
+            send_message(target_id, f"Ваш ID: {user_id} | Chat ID: {chat_id}")
             return
         elif command == '/cancel':
             if get_user_state(user_id) is not None:
                 clear_user_state(user_id)
-                send_message(chat_id, "✅ Заявка отменена.")
+                send_message(target_id, "✅ Заявка отменена.")
             else:
-                send_message(chat_id, "Нет активной заявки.")
+                send_message(target_id, "Нет активной заявки.")
             return
         elif command == '/news':
             if get_user_state(user_id) is not None:
-                send_message(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
+                send_message(target_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
                 return
             set_user_state(user_id, 0)
-            send_message(chat_id, QUESTIONS[0][1])
+            send_message(target_id, QUESTIONS[0][1])
             return
         elif command == '/pending':
             if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
+                send_message(target_id, "⛔ Нет прав.")
                 return
             rows = get_pending_applications()
             if not rows:
-                send_message(chat_id, "Нет заявок.")
+                send_message(target_id, "Нет заявок.")
                 return
             msg = "📋 Ожидающие заявки:\n\n"
             for row in rows:
                 msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
-            send_message(chat_id, msg)
+            send_message(target_id, msg)
             return
         elif command == '/approve':
             if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
+                send_message(target_id, "⛔ Нет прав.")
                 return
             if len(command_parts) < 2:
-                send_message(chat_id, "Использование: /approve <id> [комментарий]")
+                send_message(target_id, "Использование: /approve <id> [комментарий]")
                 return
             try:
                 app_id = int(command_parts[1])
             except ValueError:
-                send_message(chat_id, "ID должен быть числом.")
+                send_message(target_id, "ID должен быть числом.")
                 return
             feedback = command_parts[2] if len(command_parts) > 2 else ""
             app = get_application_by_id(app_id)
             if not app:
-                send_message(chat_id, f"Заявка #{app_id} не найдена.")
+                send_message(target_id, f"Заявка #{app_id} не найдена.")
                 return
             if app[IDX_STATUS] != 'pending':
-                send_message(chat_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
+                send_message(target_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
                 return
             update_status(app_id, 'approved', feedback)
-            send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
+            send_message(target_id, f"✅ Заявка #{app_id} одобрена.")
             try:
                 send_message(str(app[IDX_USER_ID]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
@@ -293,26 +296,26 @@ def handle_message(update):
             return
         elif command == '/reject':
             if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
+                send_message(target_id, "⛔ Нет прав.")
                 return
             if len(command_parts) < 2:
-                send_message(chat_id, "Использование: /reject <id> [комментарий]")
+                send_message(target_id, "Использование: /reject <id> [комментарий]")
                 return
             try:
                 app_id = int(command_parts[1])
             except ValueError:
-                send_message(chat_id, "ID должен быть числом.")
+                send_message(target_id, "ID должен быть числом.")
                 return
             feedback = command_parts[2] if len(command_parts) > 2 else ""
             app = get_application_by_id(app_id)
             if not app:
-                send_message(chat_id, f"Заявка #{app_id} не найдена.")
+                send_message(target_id, f"Заявка #{app_id} не найдена.")
                 return
             if app[IDX_STATUS] != 'pending':
-                send_message(chat_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
+                send_message(target_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
                 return
             update_status(app_id, 'rejected', feedback)
-            send_message(chat_id, f"❌ Заявка #{app_id} отклонена.")
+            send_message(target_id, f"❌ Заявка #{app_id} отклонена.")
             try:
                 send_message(str(app[IDX_USER_ID]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
             except:
@@ -320,16 +323,16 @@ def handle_message(update):
             return
         elif command == '/stats':
             if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
+                send_message(target_id, "⛔ Нет прав.")
                 return
             total, pending, approved, rejected = get_stats()
             send_message(
-                chat_id,
+                target_id,
                 f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
             )
             return
         else:
-            send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
+            send_message(target_id, "Неизвестная команда. Используйте /start для справки.")
             return
 
     # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА ===
@@ -345,13 +348,13 @@ def handle_message(update):
         if text.lower() == "да":
             app_id = save_application(user_id, data)
             clear_user_state(user_id)
-            send_message(chat_id, "✅ Заявка успешно отправлена на модерацию!")
+            send_message(target_id, "✅ Заявка успешно отправлена на модерацию!")
             notify_admins(app_id, data)
         elif text.lower() == "нет":
             clear_user_state(user_id)
-            send_message(chat_id, "❌ Заявка отменена.")
+            send_message(target_id, "❌ Заявка отменена.")
         else:
-            send_message(chat_id, 'Пожалуйста, ответьте "Да" или "Нет".')
+            send_message(target_id, 'Пожалуйста, ответьте "Да" или "Нет".')
         return
 
     # Основной опрос
@@ -361,7 +364,7 @@ def handle_message(update):
         next_step = step + 1
         if next_step < TOTAL_QUESTIONS:
             set_user_state(user_id, next_step, data)
-            send_message(chat_id, QUESTIONS[next_step][1])
+            send_message(target_id, QUESTIONS[next_step][1])
         else:
             set_user_state(user_id, -1, data)
             summary = (
@@ -373,7 +376,7 @@ def handle_message(update):
                 f"5. Место/время: {data.get('place_time', '—')}\n"
                 "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
             )
-            send_message(chat_id, summary)
+            send_message(target_id, summary)
 
 # ===== ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ =====
 def send_startup_test():
