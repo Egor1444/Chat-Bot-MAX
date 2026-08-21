@@ -145,13 +145,12 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ С ГЛУБОКИМ ЛОГИРОВАНИЕМ =====
+# ===== ФУНКЦИИ ОТПРАВКИ С ЛОГИРОВАНИЕМ =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
     params = {'chat_id': str(recipient_id), 'text': text}
     
-    # Видим точный целевой ID в панели хостинга
     logging.info(f"🔮 Попытка отправки сообщения на ID/Chat: {recipient_id} | Текст: {text[:30]}...")
     
     try:
@@ -196,7 +195,7 @@ def notify_admins(app_id, data):
     for admin_id in ADMIN_IDS:
         send_message(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ С САНКЦИЕЙ ID =====
+# ===== ОБРАБОТКА СООБЩЕНИЙ =====
 def handle_message(update):
     message = update.get('message', {})
     if not message:
@@ -205,10 +204,9 @@ def handle_message(update):
     recipient = message.get('recipient', {})
     sender = message.get('sender', {})
     
-    # Достаем все вариации ID для анализа
     chat_id = str(recipient.get('chat_id', ''))
     user_id = str(sender.get('user_id', ''))
-    sender_chat_id = str(sender.get('chat_id', '')) # Иногда ID личного чата лежит в sender
+    sender_chat_id = str(sender.get('chat_id', '')) 
 
     if not chat_id or not user_id:
         return
@@ -219,11 +217,9 @@ def handle_message(update):
     if not text:
         return
 
-    # ВАЖНО: Выводим в лог хостинга карту идентификаторов входящего пакета
     logging.info(f"📬 ВХОДЯЩЕЕ: от юзера={user_id} | в chat_id={chat_id} | sender_chat_id={sender_chat_id}")
 
-    # ОПРЕДЕЛЯЕМ ЦЕЛЕВОЙ ТАРГЕТ ДЛЯ ОТВЕТА
-    # Если бот отправляет "не туда", замените ниже target_id на user_id или sender_chat_id
+    # По умолчанию шлем в chat_id (комнату)
     target_id = chat_id 
 
     # === ОБРАБОТКА КОМАНД ===
@@ -283,3 +279,11 @@ def handle_message(update):
             try:
                 app_id = int(command_parts[1])
             except ValueError:
+                send_message(target_id, "ID должен быть числом.")
+                return
+            feedback = command_parts[2] if len(command_parts) > 2 else ""
+            app = get_application_by_id(app_id)
+            if not app:
+                send_message(target_id, f"Заявка #{app_id} не найдена.")
+                return
+            if app[IDX_STATUS] != 'pending':
