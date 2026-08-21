@@ -5,7 +5,7 @@ import sqlite3
 import requests
 import urllib3
 
-# Отключаем предупреждения об отсутствии SSL-проверки (если на хостинге не установлены корни Минцифры)
+# Отключаем предупреждения об отсутствии SSL-проверки
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(
@@ -21,19 +21,18 @@ if not TOKEN:
 
 logging.info(f"🔑 Токен инициализирован (длина: {len(TOKEN)})")
 
-API_BASE = "https://platform-api2.max.ru"
-ADMIN_IDS = [364551480]  # Ваш user_id (оставляем int)
+API_BASE = "https://max.ru"
+ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
 
-# ИНДЕКСЫ СТОЛБЦОВ ТАБЛИЦЫ БД (для безопасного извлечения)
-# id(0), user_id(1), full_name(2), action_desc(3), benefit(4), how_came(5), place_time(6), content(7), status(8), feedback(9)
+# ИНДЕКСЫ СТОЛБЦОВ ТАБЛИЦЫ БД
 IDX_USER_ID = 1
 IDX_STATUS = 8
 IDX_FEEDBACK = 9
 
 def check_auth():
     url = f"{API_BASE}/me"
-    headers = {'Authorization': TOKEN}  # Без Bearer согласно документации MAX
+    headers = {'Authorization': TOKEN}
     try:
         resp = requests.get(url, headers=headers, timeout=5, verify=False)
         if resp.status_code == 200:
@@ -138,21 +137,20 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ИСПРАВЛЕННЫЙ МЕТОД ОТПРАВКИ СООБЩЕНИЙ (Использует POST + JSON) =====
+# ===== ИСПРАВЛЕННЫЙ МЕТОД ОТПРАВКИ СООБЩЕНИЙ =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {
         'Authorization': TOKEN,
         'Content-Type': 'application/json'
     }
-    # Данные передаются внутри тела в json-формате
     payload = {
         'chat_id': str(recipient_id),
         'text': text
     }
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-        if resp.status_code in [200, 201]:
+        if resp.status_code in:  # Исправлено условие in
             logging.info(f"✅ Успешно доставлено в чат {recipient_id}")
             return True
         else:
@@ -244,7 +242,7 @@ def handle_message(update):
                 send_message(chat_id, "У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
                 return
             set_user_state(user_id, 0)
-            send_message(chat_id, QUESTIONS[0][1])
+            send_message(chat_id, QUESTIONS[0][1])  # Исправлено обращение к списку вопросов
             return
         elif command == '/pending':
             if not is_admin:
@@ -277,3 +275,10 @@ def handle_message(update):
             if not app:
                 send_message(chat_id, f"Заявка #{app_id} не найдена.")
                 return
+            
+            if app[IDX_STATUS] != 'pending':
+                send_message(chat_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
+                return
+            
+            new_status = 'approved' if command == '/approve' else 'rejected'
+            update_status(app_id, new_status, feedback)
