@@ -6,28 +6,31 @@ import requests
 import urllib3
 from collections import deque
 
+# Отключаем предупреждения SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# ===== КОНФИГУРАЦИЯ =====
+# ============================================
+#  КОНФИГУРАЦИЯ
+# ============================================
 API_BASE = "https://platform-api.max.ru"
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logging.warning("⚠️ Токен взят из кода (только для теста)")
 
-ADMIN_IDS = [364551480]  # Ваш user_id
+ADMIN_IDS = [364551480]  # Ваш user_id (узнайте через /id)
 DB_PATH = "news.db"
 HEADERS = {"Authorization": TOKEN}
 
-# ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ (для справки) =====
-admin_chat_ids = {}
-
-# ===== ЗАЩИТА ОТ ДУБЛЕЙ =====
+# ============================================
+#  ЗАЩИТА ОТ ДУБЛЕЙ
+# ============================================
 _SEEN = deque(maxlen=200)
 
 def dedup_key(update: dict) -> tuple:
@@ -36,7 +39,9 @@ def dedup_key(update: dict) -> tuple:
     mid = body.get('mid')
     return (update.get('update_type'), update.get('timestamp'), mid)
 
-# ===== БАЗА ДАННЫХ =====
+# ============================================
+#  БАЗА ДАННЫХ
+# ============================================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -59,7 +64,9 @@ def init_db():
 
 init_db()
 
-# ===== ФУНКЦИИ БД =====
+# ============================================
+#  ФУНКЦИИ БАЗЫ ДАННЫХ
+# ============================================
 def save_application(user_id, data):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -106,7 +113,9 @@ def get_stats():
         rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
         return total, pending, approved, rejected
 
-# ===== ХРАНИЛИЩЕ СОСТОЯНИЙ =====
+# ============================================
+#  ХРАНИЛИЩЕ СОСТОЯНИЙ ПОЛЬЗОВАТЕЛЕЙ
+# ============================================
 user_states = {}
 
 def get_user_state(user_id):
@@ -120,7 +129,9 @@ def set_user_state(user_id, step, data=None):
 def clear_user_state(user_id):
     user_states.pop(str(user_id), None)
 
-# ===== ВОПРОСЫ =====
+# ============================================
+#  ВОПРОСЫ ДЛЯ ОПРОСА
+# ============================================
 QUESTIONS = [
     ('full_name', 'Вопрос 1 из 5. Ваше полное имя (ФИО)?'),
     ('action_desc', 'Вопрос 2 из 5. Опишите суть события или действия.'),
@@ -130,31 +141,35 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET + user_id) =====
+# ============================================
+#  ОТПРАВКА СООБЩЕНИЙ (GET — единственный рабочий метод)
+# ============================================
 def send_message_safe(recipient_id: int, text: str, retries: int = 3) -> bool:
+    """
+    Отправляет сообщение через GET /messages.
+    ВНИМАНИЕ: Этот метод возвращает историю чата, а не подтверждение отправки.
+    Если сообщение не доставляется, попробуйте использовать POST с библиотекой maxapi.
+    """
     url = f"{API_BASE}/messages"
     params = {'chat_id': recipient_id, 'text': text}
     for attempt in range(retries):
         try:
             resp = requests.get(url, params=params, headers=HEADERS, timeout=20, verify=False)
-            logging.info(f"📤 GET на {recipient_id}: статус {resp.status_code}, ответ: {resp.text[:200]}")
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 5))
-                logging.warning(f"⚠️ 429, ждём {wait} сек...")
-                time.sleep(wait)
-                continue
+            logging.info(f"📤 GET на {recipient_id}: статус {resp.status_code}, ответ: {resp.text[:300]}")
             if resp.status_code == 200:
-                logging.info(f"✅ Сообщение отправлено пользователю {recipient_id}")
+                logging.info(f"✅ GET успешно выполнен для {recipient_id}")
                 return True
             else:
-                logging.error(f"❌ Ошибка отправки на {recipient_id}: {resp.status_code} - {resp.text}")
+                logging.error(f"❌ Ошибка GET на {recipient_id}: {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
             logging.error(f"❌ Исключение: {e}")
             time.sleep(1)
     return False
 
-# ===== ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ =====
+# ============================================
+#  ПОЛУЧЕНИЕ ОБНОВЛЕНИЙ
+# ============================================
 def get_updates(marker=None):
     url = f"{API_BASE}/updates"
     params = {"timeout": 30, "limit": 100}
@@ -170,7 +185,9 @@ def get_updates(marker=None):
         logging.error(f"❌ Исключение при получении: {e}")
         return {}
 
-# ===== УВЕДОМЛЕНИЕ АДМИНОВ =====
+# ============================================
+#  УВЕДОМЛЕНИЕ АДМИНИСТРАТОРОВ
+# ============================================
 def notify_admins(app_id, data):
     text = (
         f"📢 Новая заявка #{app_id}\n"
@@ -183,7 +200,9 @@ def notify_admins(app_id, data):
     for admin_id in ADMIN_IDS:
         send_message_safe(admin_id, text)
 
-# ===== ОБРАБОТКА СООБЩЕНИЙ =====
+# ============================================
+#  ОБРАБОТКА ВХОДЯЩИХ СООБЩЕНИЙ
+# ============================================
 def handle_message(update):
     key = dedup_key(update)
     if key in _SEEN:
@@ -201,10 +220,6 @@ def handle_message(update):
 
     if not chat_id or not user_id:
         return
-
-    if int(user_id) in ADMIN_IDS:
-        admin_chat_ids[int(user_id)] = chat_id
-        logging.info(f"👤 Сохранён chat_id администратора {user_id}: {chat_id}")
 
     body = message.get('body', {})
     text = body.get('text', '').strip()
@@ -224,7 +239,7 @@ def handle_message(update):
 
         # --- /help ---
         if command == '/help':
-            send_message_safe(user_id,
+            help_text = (
                 "📖 Доступные команды:\n"
                 "/start — начать работу\n"
                 "/news — подать новость\n"
@@ -236,6 +251,7 @@ def handle_message(update):
                 "/reject <id> [комментарий] — отклонить\n"
                 "/stats — статистика"
             )
+            send_message_safe(user_id, help_text)
             return
 
         # --- /start ---
@@ -403,12 +419,16 @@ def handle_message(update):
             )
             send_message_safe(user_id, summary)
 
-# ===== ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ =====
+# ============================================
+#  ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ
+# ============================================
 def send_startup_test():
     for admin_id in ADMIN_IDS:
         send_message_safe(admin_id, "🚀 Бот запущен и готов к работе!")
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
+# ============================================
+#  ОСНОВНОЙ ЦИКЛ
+# ============================================
 def main():
     logging.info("🚀 Бот запущен...")
     send_startup_test()
