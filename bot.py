@@ -22,7 +22,7 @@ if not TOKEN:
 logging.info(f"🔑 Токен (первые 4): {TOKEN[:4]}..., длина {len(TOKEN)}")
 
 # ===== БАЗОВЫЙ URL =====
-API_BASE = "https://platform-api2.max.ru"
+API_BASE = "https://max.ru"
 
 # ===== ID АДМИНИСТРАТОРА =====
 ADMIN_IDS = [364551480]
@@ -145,7 +145,7 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET — ТОЛЬКО ТАК РАБОТАЕТ!) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ =====
 def send_message(recipient_id, text):
     url = f"{API_BASE}/messages"
     headers = {'Authorization': TOKEN}
@@ -261,19 +261,22 @@ def handle_message(update):
                 msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
             send_message(chat_id, msg)
             return
-        elif command == '/approve':
+        elif command in ['/approve', '/reject']:
             if not is_admin:
                 send_message(chat_id, "⛔ Нет прав.")
                 return
             if len(command_parts) < 2:
-                send_message(chat_id, "Использование: /approve <id> [комментарий]")
+                send_message(chat_id, f"Использование: {command} <id> [комментарий]")
                 return
             try:
                 app_id = int(command_parts[1])
             except ValueError:
                 send_message(chat_id, "ID должен быть числом.")
                 return
+            
+            # Безопасное извлечение комментария без вызова IndexError
             feedback = command_parts[2] if len(command_parts) > 2 else ""
+            
             app = get_application_by_id(app_id)
             if not app:
                 send_message(chat_id, f"Заявка #{app_id} не найдена.")
@@ -281,123 +284,6 @@ def handle_message(update):
             if app[IDX_STATUS] != 'pending':
                 send_message(chat_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
                 return
-            update_status(app_id, 'approved', feedback)
-            send_message(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            try:
-                send_message(str(app[IDX_USER_ID]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
-            except:
-                pass
-            return
-        elif command == '/reject':
-            if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
-                return
-            if len(command_parts) < 2:
-                send_message(chat_id, "Использование: /reject <id> [комментарий]")
-                return
-            try:
-                app_id = int(command_parts[1])
-            except ValueError:
-                send_message(chat_id, "ID должен быть числом.")
-                return
-            feedback = command_parts[2] if len(command_parts) > 2 else ""
-            app = get_application_by_id(app_id)
-            if not app:
-                send_message(chat_id, f"Заявка #{app_id} не найдена.")
-                return
-            if app[IDX_STATUS] != 'pending':
-                send_message(chat_id, f"Заявка уже обработана (статус: {app[IDX_STATUS]}).")
-                return
-            update_status(app_id, 'rejected', feedback)
-            send_message(chat_id, f"❌ Заявка #{app_id} отклонена.")
-            try:
-                send_message(str(app[IDX_USER_ID]), f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
-            except:
-                pass
-            return
-        elif command == '/stats':
-            if not is_admin:
-                send_message(chat_id, "⛔ Нет прав.")
-                return
-            total, pending, approved, rejected = get_stats()
-            send_message(
-                chat_id,
-                f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
-            )
-            return
-        else:
-            send_message(chat_id, "Неизвестная команда. Используйте /start для справки.")
-            return
-
-    # === ОБРАБОТКА СОСТОЯНИЙ ОПРОСА ===
-    state = get_user_state(user_id)
-    if state is None:
-        return
-
-    step = state['step']
-    data = state['data']
-
-    # Режим подтверждения
-    if step == -1:
-        if text.lower() == "да":
-            app_id = save_application(user_id, data)
-            clear_user_state(user_id)
-            send_message(chat_id, "✅ Заявка успешно отправлена на модерацию!")
-            notify_admins(app_id, data)
-        elif text.lower() == "нет":
-            clear_user_state(user_id)
-            send_message(chat_id, "❌ Заявка отменена.")
-        else:
-            send_message(chat_id, 'Пожалуйста, ответьте "Да" или "Нет".')
-        return
-
-    # Основной опрос
-    if step < TOTAL_QUESTIONS:
-        field = QUESTIONS[step][0]
-        data[field] = text
-        next_step = step + 1
-        if next_step < TOTAL_QUESTIONS:
-            set_user_state(user_id, next_step, data)
-            send_message(chat_id, QUESTIONS[next_step][1])
-        else:
-            set_user_state(user_id, -1, data)
-            summary = (
-                "📋 Проверьте введённые данные:\n\n"
-                f"1. ФИО: {data.get('full_name', '—')}\n"
-                f"2. Суть: {data.get('action_desc', '—')}\n"
-                f"3. Польза: {data.get('benefit', '—')}\n"
-                f"4. Как пришли: {data.get('how_came', '—')}\n"
-                f"5. Место/время: {data.get('place_time', '—')}\n"
-                "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-            )
-            send_message(chat_id, summary)
-
-# ===== ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ =====
-def send_startup_test():
-    logging.info("📤 Отправка тестового сообщения...")
-    for admin_id in ADMIN_IDS:
-        send_message(admin_id, "🚀 Бот запущен и готов к работе!")
-
-# ===== ОСНОВНОЙ ЦИКЛ =====
-def main():
-    logging.info("🚀 Бот запущен...")
-    send_startup_test()
-    
-    last_marker = 0
-    while True:
-        try:
-            updates = get_updates(offset=last_marker + 1)
-            for update in updates:
-                if update.get('update_type') != 'message_created':
-                    continue
-                handle_message(update)
-                if 'marker' in update:
-                    last_marker = update['marker']
-                else:
-                    last_marker += 1
-        except Exception as e:
-            logging.error(f"❌ Ошибка в цикле: {e}")
-        time.sleep(1)
-
-if __name__ == "__main__":
-    main()
+            
+            new_status = 'approved' if command == '/approve' else 'rejected'
+            update_status(app_id, new_status, feedback)
