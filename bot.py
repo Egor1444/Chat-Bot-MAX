@@ -14,7 +14,8 @@ logging.basicConfig(
 )
 
 # ===== КОНФИГУРАЦИЯ =====
-API_BASE = "https://platform-api.max.ru"  # или platform-api2.max.ru
+# Пробуем оба домена – оставляем platform-api.max.ru (как в статье)
+API_BASE = "https://platform-api.max.ru"
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("MAX_BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -22,7 +23,7 @@ if not TOKEN:
 
 ADMIN_IDS = [364551480]  # Ваш user_id
 DB_PATH = "news.db"
-HEADERS = {"Authorization": TOKEN}
+HEADERS = {"Authorization": TOKEN, "Content-Type": "application/json"}
 
 # ===== ХРАНИЛИЩЕ CHAT_ID АДМИНИСТРАТОРОВ =====
 admin_chat_ids = {}
@@ -130,13 +131,20 @@ QUESTIONS = [
 ]
 TOTAL_QUESTIONS = len(QUESTIONS)
 
-# ===== ОТПРАВКА СООБЩЕНИЙ (GET — рабочий) =====
+# ===== ОТПРАВКА СООБЩЕНИЙ (POST /messages с JSON) =====
 def send_message_safe(chat_id: int, text: str, retries: int = 3) -> bool:
+    """
+    Отправляет сообщение через POST /messages с JSON-телом.
+    chat_id должен быть числом (int).
+    """
     url = f"{API_BASE}/messages"
-    params = {'chat_id': chat_id, 'text': text}
+    # Убеждаемся, что chat_id передаётся числом
+    payload = {"chat_id": int(chat_id), "text": text}
+    
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=20, verify=False)
+            resp = requests.post(url, json=payload, headers=HEADERS, timeout=20, verify=False)
+            logging.info(f"📤 Отправка POST на {chat_id}: статус {resp.status_code}, ответ: {resp.text[:200]}")
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", 5))
                 logging.warning("⚠️ Ограничение частоты (429). Ожидание %s сек...", wait)
@@ -160,7 +168,7 @@ def get_updates(marker=None):
     if marker is not None:
         params["marker"] = marker
     try:
-        resp = requests.get(url, headers=HEADERS, params=params, timeout=40, verify=False)
+        resp = requests.get(url, headers={"Authorization": TOKEN}, params=params, timeout=40, verify=False)
         if resp.status_code == 200:
             return resp.json()
         logging.error(f"❌ Ошибка получения обновлений: {resp.status_code}")
@@ -243,7 +251,7 @@ def handle_message(update):
             send_message_safe(chat_id, help_text)
             return
 
-        # --- /start с параметром (deep link) ---
+        # --- /start с параметром ---
         if command == '/start':
             if len(command_parts) > 1:
                 param = command_parts[1]
@@ -317,7 +325,6 @@ def handle_message(update):
                 return
             update_status(app_id, 'approved', feedback)
             send_message_safe(chat_id, f"✅ Заявка #{app_id} одобрена.")
-            # Уведомление пользователя
             try:
                 send_message_safe(int(app[1]), f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
             except:
