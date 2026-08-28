@@ -137,19 +137,39 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # =========================================================
-# 7. ИНИЦИАЛИЗАЦИЯ БОТА
+# 7. ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ USER_ID
+# =========================================================
+def get_user_id(event):
+    """Пытается извлечь user_id из события разными способами."""
+    # Пробуем разные варианты, так как версии maxapi отличаются
+    if hasattr(event, 'from_user') and hasattr(event.from_user, 'id'):
+        return event.from_user.id
+    if hasattr(event, 'from_') and hasattr(event.from_, 'id'):
+        return event.from_.id
+    if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
+        return event.sender.user_id
+    if hasattr(event, 'user') and hasattr(event.user, 'id'):
+        return event.user.id
+    # Если ничего не найдено, логируем и возвращаем None
+    logger.error(f"Не удалось найти user_id в событии: {dir(event)}")
+    return None
+
+# =========================================================
+# 8. ИНИЦИАЛИЗАЦИЯ БОТА
 # =========================================================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 8. ОБРАБОТЧИКИ КОМАНД
+# 9. ОБРАБОТЧИКИ КОМАНД
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
-    # Очищаем состояние пользователя при старте
-    user_id = str(event.from_.id)
-    clear_user_state(user_id)
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    clear_user_state(str(user_id))
     await event.message.answer(
         "👋 Привет! Я бот для подачи новостей.\n"
         "Чтобы начать, отправьте /news\n"
@@ -173,34 +193,48 @@ async def cmd_help(event):
 
 @dp.message_created(Command(commands=['id']))
 async def cmd_id(event):
-    user_id = str(event.from_.id)
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
     await event.message.answer(f"Ваш ID: {user_id}")
 
 @dp.message_created(Command(commands=['cancel']))
 async def cmd_cancel(event):
-    user_id = str(event.from_.id)
-    if get_user_state(user_id) is None:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    user_id_str = str(user_id)
+    if get_user_state(user_id_str) is None:
         await event.message.answer("Нет активной заявки для отмены.")
         return
-    clear_user_state(user_id)
+    clear_user_state(user_id_str)
     await event.message.answer("✅ Заявка отменена.")
 
 # =========================================================
-# 9. ОПРОС (/news)
+# 10. ОПРОС (/news)
 # =========================================================
 @dp.message_created(Command(commands=['news']))
 async def cmd_news(event):
-    user_id = str(event.from_.id)
-    if get_user_state(user_id) is not None:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    user_id_str = str(user_id)
+    if get_user_state(user_id_str) is not None:
         await event.message.answer("У вас уже есть активная заявка. Используйте /cancel, чтобы отменить её.")
         return
-    set_user_state(user_id, 0)
+    set_user_state(user_id_str, 0)
     await event.message.answer(QUESTIONS[0][1])
 
 @dp.message_created()
 async def handle_message(event):
-    user_id = str(event.from_.id)
-    state = get_user_state(user_id)
+    user_id = get_user_id(event)
+    if user_id is None:
+        return
+    user_id_str = str(user_id)
+    state = get_user_state(user_id_str)
     if state is None:
         return  # пользователь не в процессе опроса
 
@@ -216,8 +250,8 @@ async def handle_message(event):
     # === Режим подтверждения ===
     if step == -1:
         if text.lower() == "да":
-            app_id = save_application(user_id, data)
-            clear_user_state(user_id)
+            app_id = save_application(user_id_str, data)
+            clear_user_state(user_id_str)
             await event.message.answer("✅ Заявка успешно отправлена на модерацию!")
             # Уведомление админам
             admin_text = (
@@ -234,7 +268,7 @@ async def handle_message(event):
                 except Exception as e:
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
         elif text.lower() == "нет":
-            clear_user_state(user_id)
+            clear_user_state(user_id_str)
             await event.message.answer("❌ Заявка отменена.")
         else:
             await event.message.answer('Пожалуйста, ответьте "Да" или "Нет".')
@@ -246,10 +280,10 @@ async def handle_message(event):
         data[field] = text
         next_step = step + 1
         if next_step < TOTAL_QUESTIONS:
-            set_user_state(user_id, next_step, data)
+            set_user_state(user_id_str, next_step, data)
             await event.message.answer(QUESTIONS[next_step][1])
         else:
-            set_user_state(user_id, -1, data)
+            set_user_state(user_id_str, -1, data)
             summary = (
                 "📋 Проверьте введённые данные:\n\n"
                 f"1. ФИО: {data.get('full_name', '—')}\n"
@@ -262,11 +296,15 @@ async def handle_message(event):
             await event.message.answer(summary)
 
 # =========================================================
-# 10. АДМИН-КОМАНДЫ
+# 11. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
-    if event.from_.id not in ADMIN_IDS:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
         await event.message.answer("⛔ Нет прав.")
         return
     rows = get_pending_applications()
@@ -280,7 +318,11 @@ async def cmd_pending(event):
 
 @dp.message_created(Command(commands=['approve']))
 async def cmd_approve(event):
-    if event.from_.id not in ADMIN_IDS:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
         await event.message.answer("⛔ Нет прав.")
         return
     args = event.message.body.text.split(maxsplit=2)
@@ -302,6 +344,7 @@ async def cmd_approve(event):
         return
     update_status(app_id, 'approved', feedback)
     await event.message.answer(f"✅ Заявка #{app_id} одобрена.")
+    # Уведомить автора
     try:
         await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
     except:
@@ -309,7 +352,11 @@ async def cmd_approve(event):
 
 @dp.message_created(Command(commands=['reject']))
 async def cmd_reject(event):
-    if event.from_.id not in ADMIN_IDS:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
         await event.message.answer("⛔ Нет прав.")
         return
     args = event.message.body.text.split(maxsplit=2)
@@ -338,7 +385,11 @@ async def cmd_reject(event):
 
 @dp.message_created(Command(commands=['stats']))
 async def cmd_stats(event):
-    if event.from_.id not in ADMIN_IDS:
+    user_id = get_user_id(event)
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
         await event.message.answer("⛔ Нет прав.")
         return
     total, pending, approved, rejected = get_stats()
@@ -347,7 +398,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ЗАПУСК
+# 12. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
