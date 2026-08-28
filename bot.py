@@ -6,10 +6,8 @@ import requests
 import urllib3
 from datetime import datetime
 
-# Отключаем SSL-предупреждения (для тестов)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -19,24 +17,17 @@ logger = logging.getLogger(__name__)
 # =========================================================
 # 1. КОНФИГУРАЦИЯ
 # =========================================================
-# Правильный базовый URL (из документации MAX)
 API_BASE = "https://platform-api2.max.ru"
-
-# Токен читается из переменной окружения MAX_BOT_TOKEN
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
-    # Если переменные не заданы – используем токен из кода (только для локального теста)
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logger.warning("⚠️ Токен взят из кода. На хостинге обязательно задайте MAX_BOT_TOKEN!")
+    logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
 
-# ID администратора (узнайте через команду /id)
-ADMIN_IDS = [364551480]   # Замените на свой user_id
-
-# Путь к базе данных
+ADMIN_IDS = [364551480]   # Ваш user_id (узнайте через /id)
 DB_PATH = "news.db"
 
 # =========================================================
-# 2. ПРОВЕРКА ТОКЕНА (GET /me)
+# 2. ПРОВЕРКА ТОКЕНА
 # =========================================================
 def check_token():
     url = f"{API_BASE}/me"
@@ -44,7 +35,7 @@ def check_token():
     try:
         resp = requests.get(url, headers=headers, timeout=10, verify=False)
         if resp.status_code == 200:
-            logger.info("✅ Токен действителен, авторизация успешна!")
+            logger.info("✅ Токен действителен")
             return True
         else:
             logger.error(f"❌ Ошибка проверки токена: {resp.status_code} - {resp.text}")
@@ -58,38 +49,60 @@ if not check_token():
     exit(1)
 
 # =========================================================
-# 3. ОТПРАВКА СООБЩЕНИЙ (ПРАВИЛЬНЫЙ МЕТОД)
+# 3. ОТПРАВКА СООБЩЕНИЙ (ПЕРЕБОР ПАРАМЕТРОВ)
 # =========================================================
-def send_message(user_id: int, text: str, retries: int = 3) -> bool:
+def send_message(recipient_id: int, text: str, retries: int = 3) -> bool:
     """
-    Отправляет сообщение через GET /messages?user_id={user_id}&text={text}
-    Это рабочий метод, подтверждённый обратной связью.
+    Отправляет сообщение, перебирая возможные параметры:
+    - GET с chatId
+    - GET с chat_id
+    - POST с chatId (JSON)
     """
-    url = f"{API_BASE}/messages"
-    params = {
-        "user_id": user_id,
-        "text": text
-    }
+    # Варианты параметров для GET
+    param_variants = [
+        ("chatId", recipient_id),
+        ("chat_id", recipient_id),
+    ]
     headers = {"Authorization": TOKEN}
     
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
-            logger.info(f"📤 GET /messages?user_id={user_id} -> статус {resp.status_code}")
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 5))
-                logger.warning(f"⚠️ 429 Too Many Requests, ждём {wait} сек...")
-                time.sleep(wait)
-                continue
-            if resp.status_code == 200:
-                logger.info(f"✅ Сообщение отправлено пользователю {user_id}")
-                return True
-            else:
-                logger.error(f"❌ Ошибка отправки на {user_id}: {resp.status_code} - {resp.text}")
-                return False
-        except Exception as e:
-            logger.error(f"❌ Исключение при отправке: {e}")
-            time.sleep(1)
+    for param_name, param_value in param_variants:
+        url = f"{API_BASE}/messages"
+        params = {param_name: param_value, "text": text}
+        for attempt in range(retries):
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
+                logger.info(f"📤 GET /messages?{param_name}={param_value} -> статус {resp.status_code}")
+                if resp.status_code == 429:
+                    wait = int(resp.headers.get("Retry-After", 5))
+                    logger.warning(f"⚠️ 429, ждём {wait} сек...")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code == 200:
+                    logger.info(f"✅ Сообщение отправлено (GET {param_name})")
+                    return True
+                else:
+                    logger.warning(f"❌ GET с {param_name} ошибка: {resp.status_code} - {resp.text}")
+                    break  # переходим к следующему параметру
+            except Exception as e:
+                logger.error(f"❌ Исключение при GET {param_name}: {e}")
+                break
+
+    # Если GET не сработал — пробуем POST с JSON
+    try:
+        url = f"{API_BASE}/messages"
+        payload = {"chatId": recipient_id, "text": text}
+        headers_post = {"Authorization": TOKEN, "Content-Type": "application/json"}
+        resp = requests.post(url, json=payload, headers=headers_post, timeout=20, verify=False)
+        logger.info(f"📤 POST /messages с chatId={recipient_id} -> статус {resp.status_code}")
+        if resp.status_code == 200:
+            logger.info(f"✅ Сообщение отправлено (POST)")
+            return True
+        else:
+            logger.error(f"❌ POST ошибка: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"❌ Исключение при POST: {e}")
+
+    logger.error("❌ Все способы отправки не удались")
     return False
 
 # =========================================================
@@ -432,15 +445,19 @@ def handle_message(update):
             send_message(user_id, summary)
 
 # =========================================================
-# 11. ОСНОВНОЙ ЦИКЛ
+# 11. ТЕСТОВАЯ ОТПРАВКА ПРИ ЗАПУСКЕ
+# =========================================================
+def send_startup_test():
+    for admin_id in ADMIN_IDS:
+        send_message(admin_id, "🚀 Бот запущен и готов к работе!")
+
+# =========================================================
+# 12. ОСНОВНОЙ ЦИКЛ
 # =========================================================
 def main():
     logger.info("🚀 Бот запущен...")
+    send_startup_test()
     marker = None
-
-    # Отправляем тестовое сообщение администратору при старте
-    for admin_id in ADMIN_IDS:
-        send_message(admin_id, "🚀 Бот запущен и готов к работе!")
 
     while True:
         try:
