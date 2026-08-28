@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 # 1. КОНФИГУРАЦИЯ
 # =========================================================
-API_BASE = "https://platform-api2.max.ru"
+API_BASE = "https://platform-api2.max.ru"  # Правильный URL
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -49,103 +49,37 @@ if not check_token():
     exit(1)
 
 # =========================================================
-# 3. ОТПРАВКА СООБЩЕНИЙ (ПОЛНЫЙ ПЕРЕБОР)
+# 3. ОТПРАВКА СООБЩЕНИЙ (РАБОЧИЙ МЕТОД)
 # =========================================================
 def send_message(recipient_id: int, text: str, retries: int = 3) -> bool:
     """
-    Перебирает все возможные комбинации эндпоинтов, методов и параметров.
+    Отправляет сообщение через GET /messages?chat_id={recipient_id}&text={text}
     """
-    # Список эндпоинтов
-    endpoints = ["/messages", "/sendMessage", "/send", "/message"]
-    # Список параметров для GET
-    get_params_variants = [
-        ("chatId", recipient_id),
-        ("chat_id", recipient_id),
-        ("user_id", recipient_id),
-        ("recipient", recipient_id),
-        ("to", recipient_id),
-    ]
-    # Список полей для POST (JSON)
-    post_payload_variants = [
-        ("chatId", {"chatId": recipient_id, "text": text}),
-        ("chat_id", {"chat_id": recipient_id, "text": text}),
-        ("user_id", {"user_id": recipient_id, "text": text}),
-        ("recipient", {"recipient": {"chat_id": recipient_id}, "text": text}),
-        ("to", {"to": recipient_id, "text": text}),
-    ]
+    url = f"{API_BASE}/messages"
+    params = {
+        "chat_id": recipient_id,
+        "text": text
+    }
     headers = {"Authorization": TOKEN}
-
-    for endpoint in endpoints:
-        # === GET-запросы ===
-        for param_name, param_value in get_params_variants:
-            url = f"{API_BASE}{endpoint}"
-            params = {param_name: param_value, "text": text}
-            for attempt in range(retries):
-                try:
-                    resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
-                    logger.info(f"📤 GET {endpoint}?{param_name}={param_value} -> {resp.status_code}")
-                    if resp.status_code == 429:
-                        wait = int(resp.headers.get("Retry-After", 5))
-                        logger.warning(f"⚠️ 429, ждём {wait} сек...")
-                        time.sleep(wait)
-                        continue
-                    if resp.status_code == 200:
-                        logger.info(f"✅ УСПЕХ: GET {endpoint} с {param_name}")
-                        return True
-                    else:
-                        logger.warning(f"❌ GET {endpoint} {param_name} ошибка: {resp.status_code} - {resp.text}")
-                        break
-                except Exception as e:
-                    logger.error(f"❌ Исключение GET {endpoint} {param_name}: {e}")
-                    break
-
-        # === POST-запросы ===
-        for payload_name, payload in post_payload_variants:
-            url = f"{API_BASE}{endpoint}"
-            headers_post = {"Authorization": TOKEN, "Content-Type": "application/json"}
-            for attempt in range(retries):
-                try:
-                    resp = requests.post(url, json=payload, headers=headers_post, timeout=20, verify=False)
-                    logger.info(f"📤 POST {endpoint} с {payload_name} -> {resp.status_code}")
-                    if resp.status_code == 429:
-                        wait = int(resp.headers.get("Retry-After", 5))
-                        logger.warning(f"⚠️ 429, ждём {wait} сек...")
-                        time.sleep(wait)
-                        continue
-                    if resp.status_code == 200:
-                        logger.info(f"✅ УСПЕХ: POST {endpoint} с {payload_name}")
-                        return True
-                    else:
-                        logger.warning(f"❌ POST {endpoint} {payload_name} ошибка: {resp.status_code} - {resp.text}")
-                        break
-                except Exception as e:
-                    logger.error(f"❌ Исключение POST {endpoint} {payload_name}: {e}")
-                    break
-
-    # Если ничего не сработало, пробуем альтернативный базовый URL (platform-api.max.ru)
-    alt_base = "https://platform-api.max.ru"
-    for endpoint in ["/messages", "/sendMessage"]:
-        url = f"{alt_base}{endpoint}"
-        params = {"chatId": recipient_id, "text": text}
+    
+    for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, headers={"Authorization": TOKEN}, timeout=20, verify=False)
-            logger.info(f"📤 GET {alt_base}{endpoint}?chatId={recipient_id} -> {resp.status_code}")
+            resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
+            logger.info(f"📤 GET /messages?chat_id={recipient_id} -> {resp.status_code}")
+            if resp.status_code == 429:
+                wait = int(resp.headers.get("Retry-After", 5))
+                logger.warning(f"⚠️ 429, ждём {wait} сек...")
+                time.sleep(wait)
+                continue
             if resp.status_code == 200:
-                logger.info("✅ УСПЕХ: альтернативный URL с chatId")
+                logger.info(f"✅ Сообщение отправлено пользователю {recipient_id}")
                 return True
-        except:
-            pass
-        payload = {"chatId": recipient_id, "text": text}
-        try:
-            resp = requests.post(url, json=payload, headers={"Authorization": TOKEN, "Content-Type": "application/json"}, timeout=20, verify=False)
-            logger.info(f"📤 POST {alt_base}{endpoint} с chatId -> {resp.status_code}")
-            if resp.status_code == 200:
-                logger.info("✅ УСПЕХ: альтернативный URL POST с chatId")
-                return True
-        except:
-            pass
-
-    logger.error("❌ Все способы отправки не удались")
+            else:
+                logger.error(f"❌ Ошибка отправки на {recipient_id}: {resp.status_code} - {resp.text}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Исключение при отправке: {e}")
+            time.sleep(1)
     return False
 
 # =========================================================
