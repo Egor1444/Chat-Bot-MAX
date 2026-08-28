@@ -137,21 +137,18 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # =========================================================
-# 7. ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ USER_ID
+# 7. ПОЛУЧЕНИЕ USER_ID (ПРАВИЛЬНЫЙ СПОСОБ)
 # =========================================================
 def get_user_id(event):
-    """Пытается извлечь user_id из события разными способами."""
-    # Пробуем разные варианты, так как версии maxapi отличаются
-    if hasattr(event, 'from_user') and hasattr(event.from_user, 'id'):
+    """Извлекает user_id из события."""
+    if hasattr(event, 'from_user') and event.from_user:
         return event.from_user.id
-    if hasattr(event, 'from_') and hasattr(event.from_, 'id'):
-        return event.from_.id
+    # Запасные варианты (на случай другой версии)
     if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
         return event.sender.user_id
     if hasattr(event, 'user') and hasattr(event.user, 'id'):
         return event.user.id
-    # Если ничего не найдено, логируем и возвращаем None
-    logger.error(f"Не удалось найти user_id в событии: {dir(event)}")
+    logger.error(f"Не удалось найти user_id в событии. Атрибуты: {dir(event)}")
     return None
 
 # =========================================================
@@ -238,7 +235,6 @@ async def handle_message(event):
     if state is None:
         return  # пользователь не в процессе опроса
 
-    # Если сообщение – не текст, игнорируем
     if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
         await event.message.answer("Пожалуйста, отправьте текстовое сообщение.")
         return
@@ -344,7 +340,6 @@ async def cmd_approve(event):
         return
     update_status(app_id, 'approved', feedback)
     await event.message.answer(f"✅ Заявка #{app_id} одобрена.")
-    # Уведомить автора
     try:
         await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
     except:
