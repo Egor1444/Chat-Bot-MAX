@@ -8,6 +8,7 @@ from datetime import datetime
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -20,14 +21,15 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://platform-api2.max.ru"
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
+    # Токен для теста – замените на свой в переменной окружения
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
 
-ADMIN_IDS = [364551480]   # Ваш user_id
+ADMIN_IDS = [364551480]   # Ваш user_id (узнайте через /id)
 DB_PATH = "news.db"
 
 # =========================================================
-# 2. ПРОВЕРКА ТОКЕНА
+# 2. ПРОВЕРКА ТОКЕНА (GET /me)
 # =========================================================
 def check_token():
     url = f"{API_BASE}/me"
@@ -49,16 +51,20 @@ if not check_token():
     exit(1)
 
 # =========================================================
-# 3. ОТПРАВКА СООБЩЕНИЙ (ПАРАМЕТР chat_id — РАБОТАЕТ)
+# 3. ОТПРАВКА СООБЩЕНИЙ (РАБОЧИЙ МЕТОД – GET с chat_id)
 # =========================================================
 def send_message(recipient_id: int, text: str, retries: int = 3) -> bool:
+    """
+    Отправляет сообщение через GET /messages?chat_id={recipient_id}&text={text}
+    Этот метод подтверждён логами (статус 200).
+    """
     url = f"{API_BASE}/messages"
     params = {
-        "chat_id": recipient_id,   # Правильный параметр (подтверждён логами)
+        "chat_id": recipient_id,
         "text": text
     }
     headers = {"Authorization": TOKEN}
-    
+
     for attempt in range(retries):
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
@@ -429,7 +435,7 @@ def send_startup_test():
 # 12. ОСНОВНОЙ ЦИКЛ
 # =========================================================
 def main():
-    logger.info("🚀 Бот запущен, вход в основной цикл...")
+    logger.info("🚀 Бот запущен...")
     send_startup_test()
     marker = None
 
