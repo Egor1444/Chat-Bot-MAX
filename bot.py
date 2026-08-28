@@ -137,18 +137,32 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # =========================================================
-# 7. ПОЛУЧЕНИЕ USER_ID (ПРАВИЛЬНЫЙ СПОСОБ)
+# 7. ПОЛУЧЕНИЕ USER_ID (универсальное)
 # =========================================================
 def get_user_id(event):
-    """Извлекает user_id из события."""
+    """
+    Пытается извлечь user_id из события, перебирая возможные атрибуты.
+    """
+    # Пробуем from_user (основной вариант)
     if hasattr(event, 'from_user') and event.from_user:
-        return event.from_user.id
-    # Запасные варианты (на случай другой версии)
+        user_obj = event.from_user
+        # Перебираем возможные имена атрибутов
+        for attr in ['user_id', 'id', 'uid', 'pk']:
+            if hasattr(user_obj, attr):
+                value = getattr(user_obj, attr)
+                if value is not None:
+                    return value
+
+    # Пробуем sender.user_id
     if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
         return event.sender.user_id
+
+    # Пробуем user.id
     if hasattr(event, 'user') and hasattr(event.user, 'id'):
         return event.user.id
-    logger.error(f"Не удалось найти user_id в событии. Атрибуты: {dir(event)}")
+
+    # Если ничего не найдено, логируем и возвращаем None
+    logger.error(f"Не удалось найти user_id. Атрибуты event: {dir(event)}")
     return None
 
 # =========================================================
