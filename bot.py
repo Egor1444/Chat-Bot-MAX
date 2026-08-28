@@ -22,7 +22,10 @@ if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
 
+# Убедитесь, что здесь ваш правильный ID
 ADMIN_IDS = [364551480]   # Ваш user_id
+logger.info(f"🔑 Администраторы: {ADMIN_IDS}")
+
 DB_PATH = "news.db"
 
 # =========================================================
@@ -137,32 +140,25 @@ QUESTIONS = [
 TOTAL_QUESTIONS = len(QUESTIONS)
 
 # =========================================================
-# 7. ПОЛУЧЕНИЕ USER_ID (универсальное)
+# 7. ПОЛУЧЕНИЕ USER_ID (с диагностикой)
 # =========================================================
 def get_user_id(event):
     """
-    Пытается извлечь user_id из события, перебирая возможные атрибуты.
+    Извлекает user_id из события, логируя все возможные варианты.
     """
-    # Пробуем from_user (основной вариант)
-    if hasattr(event, 'from_user') and event.from_user:
-        user_obj = event.from_user
-        # Перебираем возможные имена атрибутов
-        for attr in ['user_id', 'id', 'uid', 'pk']:
-            if hasattr(user_obj, attr):
-                value = getattr(user_obj, attr)
-                if value is not None:
-                    return value
-
-    # Пробуем sender.user_id
+    # Прямой доступ через from_user.user_id (наиболее вероятный)
+    if hasattr(event, 'from_user') and hasattr(event.from_user, 'user_id'):
+        return event.from_user.user_id
+    if hasattr(event, 'from_user') and hasattr(event.from_user, 'id'):
+        return event.from_user.id
     if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
         return event.sender.user_id
-
-    # Пробуем user.id
     if hasattr(event, 'user') and hasattr(event.user, 'id'):
         return event.user.id
-
-    # Если ничего не найдено, логируем и возвращаем None
+    # Если ничего не найдено, логируем структуру
     logger.error(f"Не удалось найти user_id. Атрибуты event: {dir(event)}")
+    if hasattr(event, 'from_user'):
+        logger.error(f"Атрибуты from_user: {dir(event.from_user)}")
     return None
 
 # =========================================================
@@ -172,11 +168,12 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 9. ОБРАБОТЧИКИ КОМАНД
+# 9. ОБРАБОТЧИКИ КОМАНД (с диагностикой)
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
     user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_start: user_id={user_id}")
     if user_id is None:
         await event.message.answer("Ошибка: не удалось определить ваш ID.")
         return
@@ -189,6 +186,7 @@ async def cmd_start(event):
 
 @dp.message_created(Command(commands=['help']))
 async def cmd_help(event):
+    logger.info("🔍 Команда /help вызвана")
     await event.message.answer(
         "📖 Доступные команды:\n"
         "/start — начать работу\n"
@@ -205,6 +203,7 @@ async def cmd_help(event):
 @dp.message_created(Command(commands=['id']))
 async def cmd_id(event):
     user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_id: user_id={user_id}")
     if user_id is None:
         await event.message.answer("Ошибка: не удалось определить ваш ID.")
         return
@@ -213,6 +212,7 @@ async def cmd_id(event):
 @dp.message_created(Command(commands=['cancel']))
 async def cmd_cancel(event):
     user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_cancel: user_id={user_id}")
     if user_id is None:
         await event.message.answer("Ошибка: не удалось определить ваш ID.")
         return
@@ -229,6 +229,7 @@ async def cmd_cancel(event):
 @dp.message_created(Command(commands=['news']))
 async def cmd_news(event):
     user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_news: user_id={user_id}")
     if user_id is None:
         await event.message.answer("Ошибка: не удалось определить ваш ID.")
         return
@@ -239,6 +240,114 @@ async def cmd_news(event):
     set_user_state(user_id_str, 0)
     await event.message.answer(QUESTIONS[0][1])
 
+# =========================================================
+# 11. АДМИН-КОМАНДЫ (с диагностикой)
+# =========================================================
+@dp.message_created(Command(commands=['pending']))
+async def cmd_pending(event):
+    user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_pending: user_id={user_id}, ADMIN_IDS={ADMIN_IDS}")
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    rows = get_pending_applications()
+    if not rows:
+        await event.message.answer("Нет заявок.")
+        return
+    msg = "📋 Ожидающие заявки:\n\n"
+    for row in rows:
+        msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
+    await event.message.answer(msg)
+
+@dp.message_created(Command(commands=['approve']))
+async def cmd_approve(event):
+    user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_approve: user_id={user_id}")
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    args = event.message.body.text.split(maxsplit=2)
+    if len(args) < 2:
+        await event.message.answer("Использование: /approve <id> [комментарий]")
+        return
+    try:
+        app_id = int(args[1])
+    except ValueError:
+        await event.message.answer("ID должен быть числом.")
+        return
+    feedback = args[2] if len(args) > 2 else ""
+    app = get_application_by_id(app_id)
+    if not app:
+        await event.message.answer(f"Заявка #{app_id} не найдена.")
+        return
+    if app[8] != 'pending':
+        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
+        return
+    update_status(app_id, 'approved', feedback)
+    await event.message.answer(f"✅ Заявка #{app_id} одобрена.")
+    try:
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
+    except:
+        pass
+
+@dp.message_created(Command(commands=['reject']))
+async def cmd_reject(event):
+    user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_reject: user_id={user_id}")
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    args = event.message.body.text.split(maxsplit=2)
+    if len(args) < 2:
+        await event.message.answer("Использование: /reject <id> [комментарий]")
+        return
+    try:
+        app_id = int(args[1])
+    except ValueError:
+        await event.message.answer("ID должен быть числом.")
+        return
+    feedback = args[2] if len(args) > 2 else ""
+    app = get_application_by_id(app_id)
+    if not app:
+        await event.message.answer(f"Заявка #{app_id} не найдена.")
+        return
+    if app[8] != 'pending':
+        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
+        return
+    update_status(app_id, 'rejected', feedback)
+    await event.message.answer(f"❌ Заявка #{app_id} отклонена.")
+    try:
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
+    except:
+        pass
+
+@dp.message_created(Command(commands=['stats']))
+async def cmd_stats(event):
+    user_id = get_user_id(event)
+    logger.info(f"🔍 cmd_stats: user_id={user_id}")
+    if user_id is None:
+        await event.message.answer("Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
+        await event.message.answer("⛔ Нет прав.")
+        return
+    total, pending, approved, rejected = get_stats()
+    await event.message.answer(
+        f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
+    )
+
+# =========================================================
+# 12. ОБЩИЙ ОБРАБОТЧИК (для состояний опроса)
+# =========================================================
 @dp.message_created()
 async def handle_message(event):
     user_id = get_user_id(event)
@@ -247,7 +356,8 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
     if state is None:
-        return  # пользователь не в процессе опроса
+        # Если пользователь не в процессе опроса, ничего не делаем
+        return
 
     if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
         await event.message.answer("Пожалуйста, отправьте текстовое сообщение.")
@@ -263,7 +373,6 @@ async def handle_message(event):
             app_id = save_application(user_id_str, data)
             clear_user_state(user_id_str)
             await event.message.answer("✅ Заявка успешно отправлена на модерацию!")
-            # Уведомление админам
             admin_text = (
                 f"📢 Новая заявка #{app_id}\n"
                 f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -306,108 +415,7 @@ async def handle_message(event):
             await event.message.answer(summary)
 
 # =========================================================
-# 11. АДМИН-КОМАНДЫ
-# =========================================================
-@dp.message_created(Command(commands=['pending']))
-async def cmd_pending(event):
-    user_id = get_user_id(event)
-    if user_id is None:
-        await event.message.answer("Ошибка: не удалось определить ваш ID.")
-        return
-    if user_id not in ADMIN_IDS:
-        await event.message.answer("⛔ Нет прав.")
-        return
-    rows = get_pending_applications()
-    if not rows:
-        await event.message.answer("Нет заявок.")
-        return
-    msg = "📋 Ожидающие заявки:\n\n"
-    for row in rows:
-        msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
-    await event.message.answer(msg)
-
-@dp.message_created(Command(commands=['approve']))
-async def cmd_approve(event):
-    user_id = get_user_id(event)
-    if user_id is None:
-        await event.message.answer("Ошибка: не удалось определить ваш ID.")
-        return
-    if user_id not in ADMIN_IDS:
-        await event.message.answer("⛔ Нет прав.")
-        return
-    args = event.message.body.text.split(maxsplit=2)
-    if len(args) < 2:
-        await event.message.answer("Использование: /approve <id> [комментарий]")
-        return
-    try:
-        app_id = int(args[1])
-    except ValueError:
-        await event.message.answer("ID должен быть числом.")
-        return
-    feedback = args[2] if len(args) > 2 else ""
-    app = get_application_by_id(app_id)
-    if not app:
-        await event.message.answer(f"Заявка #{app_id} не найдена.")
-        return
-    if app[8] != 'pending':
-        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
-        return
-    update_status(app_id, 'approved', feedback)
-    await event.message.answer(f"✅ Заявка #{app_id} одобрена.")
-    try:
-        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
-    except:
-        pass
-
-@dp.message_created(Command(commands=['reject']))
-async def cmd_reject(event):
-    user_id = get_user_id(event)
-    if user_id is None:
-        await event.message.answer("Ошибка: не удалось определить ваш ID.")
-        return
-    if user_id not in ADMIN_IDS:
-        await event.message.answer("⛔ Нет прав.")
-        return
-    args = event.message.body.text.split(maxsplit=2)
-    if len(args) < 2:
-        await event.message.answer("Использование: /reject <id> [комментарий]")
-        return
-    try:
-        app_id = int(args[1])
-    except ValueError:
-        await event.message.answer("ID должен быть числом.")
-        return
-    feedback = args[2] if len(args) > 2 else ""
-    app = get_application_by_id(app_id)
-    if not app:
-        await event.message.answer(f"Заявка #{app_id} не найдена.")
-        return
-    if app[8] != 'pending':
-        await event.message.answer(f"Заявка уже обработана (статус: {app[8]}).")
-        return
-    update_status(app_id, 'rejected', feedback)
-    await event.message.answer(f"❌ Заявка #{app_id} отклонена.")
-    try:
-        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
-    except:
-        pass
-
-@dp.message_created(Command(commands=['stats']))
-async def cmd_stats(event):
-    user_id = get_user_id(event)
-    if user_id is None:
-        await event.message.answer("Ошибка: не удалось определить ваш ID.")
-        return
-    if user_id not in ADMIN_IDS:
-        await event.message.answer("⛔ Нет прав.")
-        return
-    total, pending, approved, rejected = get_stats()
-    await event.message.answer(
-        f"📊 Статистика:\nВсего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}"
-    )
-
-# =========================================================
-# 12. ЗАПУСК
+# 13. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
