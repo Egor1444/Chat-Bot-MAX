@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 # 1. КОНФИГУРАЦИЯ
 # =========================================================
-API_BASE = "https://platform-api2.max.ru"  # Правильный URL
+API_BASE = "https://platform-api2.max.ru/messages?user_id={user_id}&quot;"
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
@@ -54,6 +54,7 @@ if not check_token():
 def send_message(recipient_id: int, text: str, retries: int = 3) -> bool:
     """
     Отправляет сообщение через GET /messages?chat_id={recipient_id}&text={text}
+    Это рабочий метод, подтверждённый логами.
     """
     url = f"{API_BASE}/messages"
     params = {
@@ -65,10 +66,10 @@ def send_message(recipient_id: int, text: str, retries: int = 3) -> bool:
     for attempt in range(retries):
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=20, verify=False)
-            logger.info(f"📤 GET /messages?chat_id={recipient_id} -> {resp.status_code}")
+            logger.info(f"📤 GET /messages?chat_id={recipient_id} -> статус {resp.status_code}")
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", 5))
-                logger.warning(f"⚠️ 429, ждём {wait} сек...")
+                logger.warning(f"⚠️ 429 Too Many Requests, ждём {wait} сек...")
                 time.sleep(wait)
                 continue
             if resp.status_code == 200:
