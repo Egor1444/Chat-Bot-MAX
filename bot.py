@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import sqlite3
+import requests as http_requests
 from datetime import datetime
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart, Command
@@ -206,7 +207,8 @@ def get_file_from_event(event):
     return None
 
 def save_file(file_obj):
-    name = getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
+    # Получаем имя файла
+    name = getattr(file_obj, 'filename', None) or getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
     if '.' in name:
         ext = name.split('.')[-1]
     else:
@@ -218,6 +220,16 @@ def save_file(file_obj):
     elif hasattr(file_obj, 'file_id'):
         return str(file_obj.file_id)
     else:
+        # Если нет download, пытаемся скачать через payload.url
+        if hasattr(file_obj, 'payload') and hasattr(file_obj.payload, 'url'):
+            try:
+                resp = http_requests.get(file_obj.payload.url, headers={'Authorization': TOKEN}, verify=False)
+                if resp.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        f.write(resp.content)
+                    return file_path
+            except Exception as e:
+                logger.error(f"Ошибка скачивания файла: {e}")
         return name
     return file_path
 
@@ -227,17 +239,6 @@ def save_file(file_obj):
 async def send_file_to_admin(file_path, caption):
     ext = os.path.splitext(file_path)[1].lower()
     is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-    try:
-        with open(file_path, 'rb') as f:
-            file_data = f.read()
-    except Exception as e:
-        logger.error(f"Не удалось прочитать файл {file_path}: {e}")
-        for admin_id in ADMIN_IDS:
-            chat_id = admin_chat_ids.get(admin_id)
-            if chat_id:
-                await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл не удалось отправить.")
-        return
-
     for admin_id in ADMIN_IDS:
         chat_id = admin_chat_ids.get(admin_id)
         if not chat_id:
@@ -245,9 +246,9 @@ async def send_file_to_admin(file_path, caption):
             continue
         try:
             if is_image:
-                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=caption)
+                await bot.send_photo(chat_id=chat_id, photo=file_path, caption=caption)
             else:
-                await bot.send_document(chat_id=chat_id, document=file_data, caption=caption)
+                await bot.send_document(chat_id=chat_id, document=file_path, caption=caption)
             logger.info(f"📎 Файл отправлен админу {admin_id} (chat_id={chat_id})")
         except Exception as e:
             logger.error(f"Ошибка отправки файла админу {admin_id}: {e}")
@@ -274,6 +275,7 @@ async def cmd_start(event):
     if user_id is None:
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
+    # Очищаем состояние
     clear_user_state(str(user_id))
     await bot.send_message(chat_id=chat_id,
         text="👋 Привет! Я бот для подачи новостей.\n"
@@ -454,7 +456,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 13. ОСНОВНОЙ ОБРАБОТЧИК (с сохранением chat_id админа)
+# 13. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -479,7 +481,7 @@ async def handle_message(event):
     step = state['step']
     data = state['data']
 
-    # --- ШАГ 5: ФАЙЛ (сохраняем и сразу отправляем заявку) ---
+    # --- ШАГ 5: ФАЙЛ ---
     if step == FILE_STEP:
         logger.info(f"📂 Обработка шага файла для {user_id_str}")
         file_obj = get_file_from_event(event)
