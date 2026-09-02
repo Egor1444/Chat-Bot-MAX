@@ -35,7 +35,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # =========================================================
 # 3. ХРАНИЛИЩЕ CHAT_ID АДМИНОВ
 # =========================================================
-admin_chat_ids = {}  # {user_id: chat_id}
+admin_chat_ids = {}
 
 # =========================================================
 # 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -168,16 +168,17 @@ def clear_user_state(user_id):
         logger.warning(f"⚠️ Попытка очистить несуществующее состояние для {user_id}")
 
 # =========================================================
-# 7. ВОПРОСЫ
+# 7. ВОПРОСЫ (с комментарием)
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
     ('action_desc', 'Опишите событие или действие, о котором хотите сообщить. Что именно произошло?'),
     ('benefit', 'Какую пользу или ценность эта новость принесёт аудитории?'),
     ('how_came', 'Как вы пришли к этому? Какие обстоятельства или предпосылки к этому привели?'),
-    ('place_time', 'Где и когда произошло событие? Укажите место и дату (город, площадка, время).')
+    ('place_time', 'Где и когда произошло событие? Укажите место и дату (город, площадка, время).'),
+    ('content', 'Если хотите, добавьте комментарий или дополнительную информацию (можно пропустить, отправьте «—»).')
 ]
-FILE_STEP = len(QUESTIONS)  # 5
+FILE_STEP = len(QUESTIONS)  # теперь 6
 
 # =========================================================
 # 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА
@@ -237,28 +238,24 @@ def save_file(file_obj):
     return name
 
 # =========================================================
-# 9. ОТПРАВКА ФАЙЛА АДМИНУ (с байтами)
+# 9. ОТПРАВКА ФАЙЛА АДМИНУ (через send_file)
 # =========================================================
 async def send_file_to_admin(file_path, caption):
-    ext = os.path.splitext(file_path)[1].lower()
-    is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
     for admin_id in ADMIN_IDS:
         chat_id = admin_chat_ids.get(admin_id)
         if not chat_id:
             logger.warning(f"⚠️ Chat_id для администратора {admin_id} не найден, пропускаем отправку файла.")
             continue
         try:
-            # Читаем файл в байты
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-            if is_image:
-                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=caption)
+            # Пытаемся отправить файл с помощью send_file (если метод существует)
+            if hasattr(bot, 'send_file'):
+                await bot.send_file(chat_id=chat_id, file=file_path, caption=caption)
             else:
-                await bot.send_document(chat_id=chat_id, document=file_data, caption=caption)
+                # Fallback: отправляем только текст с путём
+                await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл: {file_path}")
             logger.info(f"📎 Файл отправлен админу {admin_id} (chat_id={chat_id})")
         except Exception as e:
             logger.error(f"Ошибка отправки файла админу {admin_id}: {e}")
-            # Если не удалось отправить файл, отправляем текст с путём
             try:
                 await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл: {file_path}")
             except:
@@ -405,20 +402,16 @@ async def cmd_view(event):
         f"Польза: {app[4]}\n"
         f"Как пришёл: {app[5]}\n"
         f"Место/время: {app[6]}\n"
-        f"Комментарий: {app[7] or '—'}\n"
-        f"Статус: {app[9]}\n"
-        f"Создана: {app[-1]}"
     )
+    if app[7]:
+        text += f"Комментарий: {app[7]}\n"
+    text += f"Статус: {app[9]}\nСоздана: {app[-1]}"
     if app[8] and os.path.exists(app[8]):
-        ext = os.path.splitext(app[8])[1].lower()
-        is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
         try:
-            with open(app[8], 'rb') as f:
-                file_data = f.read()
-            if is_image:
-                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=text)
+            if hasattr(bot, 'send_file'):
+                await bot.send_file(chat_id=chat_id, file=app[8], caption=text)
             else:
-                await bot.send_document(chat_id=chat_id, document=file_data, caption=text)
+                await bot.send_message(chat_id=chat_id, text=text + f"\nФайл: {app[8]}")
             return
         except Exception as e:
             logger.error(f"Ошибка отправки файла при просмотре: {e}")
@@ -528,7 +521,6 @@ async def handle_message(event):
         return
     user_id_str = str(user_id)
 
-    # Сохраняем chat_id администратора
     if user_id in ADMIN_IDS:
         admin_chat_ids[user_id] = chat_id
         logger.info(f"👤 Сохранён chat_id для администратора {user_id}: {chat_id}")
@@ -541,7 +533,7 @@ async def handle_message(event):
     step = state['step']
     data = state['data']
 
-    # --- ШАГ 5: ФАЙЛ ---
+    # --- ШАГ 6: ФАЙЛ ---
     if step == FILE_STEP:
         logger.info(f"📂 Обработка шага файла для {user_id_str}")
         file_obj = get_file_from_event(event)
@@ -557,10 +549,9 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз.")
                 return
         else:
-            # Проверяем "пропустить"
             if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
                 text = event.message.body.text.strip().lower()
-                if text == "пропустить":
+                if text == "пропустить" or text == "—":
                     data['file_path'] = None
                     logger.info("📎 Файл пропущен")
                 else:
@@ -572,12 +563,10 @@ async def handle_message(event):
                     text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
                 return
 
-        # Сохраняем заявку
         app_id = save_application(user_id_str, data, data.get('file_path'))
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
 
-        # Формируем полный текст для админа
         admin_text = (
             f"📢 Новая заявка #{app_id}\n"
             f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -586,8 +575,9 @@ async def handle_message(event):
             f"Как пришёл: {data.get('how_came', 'не указано')}\n"
             f"Место/время: {data.get('place_time', 'не указано')}"
         )
+        if data.get('content'):
+            admin_text += f"\nКомментарий: {data['content']}"
 
-        # Отправляем уведомление админу (с файлом или без)
         if data.get('file_path') and os.path.exists(data['file_path']):
             await send_file_to_admin(data['file_path'], admin_text)
         else:
@@ -602,7 +592,7 @@ async def handle_message(event):
                     logger.warning(f"⚠️ Chat_id для админа {admin_id} не найден, пропускаем уведомление.")
         return
 
-    # --- ШАГИ 0-4: ОСНОВНЫЕ ВОПРОСЫ ---
+    # --- ШАГИ 0-5: ВОПРОСЫ ---
     if step < FILE_STEP:
         if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
@@ -611,6 +601,10 @@ async def handle_message(event):
         if not text:
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
             return
+        # Для комментария разрешаем пустой ответ через "—"
+        if step == 5:
+            if text == "—":
+                text = ""
         field = QUESTIONS[step][0]
         data[field] = text
         next_step = step + 1
@@ -623,7 +617,6 @@ async def handle_message(event):
                 text="Прикрепите фото, подтверждающее событие (если есть). Напишите «Пропустить», чтобы пропустить.")
         return
 
-    # Если состояние неизвестно
     logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
 
 # =========================================================
