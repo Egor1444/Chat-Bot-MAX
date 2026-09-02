@@ -54,7 +54,6 @@ def get_chat_id(event):
         return event.chat_id
     if hasattr(event, 'message') and hasattr(event.message, 'recipient'):
         return event.message.recipient.chat_id
-    logger.error(f"Не удалось найти chat_id в событии.")
     return None
 
 # =========================================================
@@ -171,7 +170,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 8. ФУНКЦИЯ СОХРАНЕНИЯ ФАЙЛА
+# 8. ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛАМИ
 # =========================================================
 def save_file(file_obj):
     ext = file_obj.name.split('.')[-1] if '.' in file_obj.name else ''
@@ -180,11 +179,27 @@ def save_file(file_obj):
     file_obj.download(file_path)
     return file_path
 
-def is_photo_file(event):
-    return hasattr(event.message, 'photo') and event.message.photo
-
-def is_document_file(event):
-    return hasattr(event.message, 'document') and event.message.document
+def get_file_from_event(event):
+    """
+    Пытается извлечь файл из события, пробуя разные возможные поля.
+    Возвращает объект файла или None.
+    """
+    # Пробуем стандартные поля maxapi
+    if hasattr(event.message, 'photo') and event.message.photo:
+        return event.message.photo
+    if hasattr(event.message, 'document') and event.message.document:
+        return event.message.document
+    if hasattr(event.message, 'file') and event.message.file:
+        return event.message.file
+    # Пробуем body.file (для некоторых версий)
+    if hasattr(event.message, 'body') and hasattr(event.message.body, 'file'):
+        return event.message.body.file
+    # Пробуем attachments
+    if hasattr(event.message, 'attachments') and event.message.attachments:
+        return event.message.attachments[0]  # берём первый
+    # Если ничего не найдено, логируем структуру
+    logger.warning(f"Не удалось найти файл в сообщении. Атрибуты event.message: {dir(event.message)}")
+    return None
 
 # =========================================================
 # 9. ИНИЦИАЛИЗАЦИЯ БОТА
@@ -386,7 +401,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 12. ОБРАБОТЧИК СООБЩЕНИЙ (исправлен)
+# 12. ОБРАБОТЧИК СООБЩЕНИЙ (с диагностикой файлов)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -406,9 +421,9 @@ async def handle_message(event):
 
     # --- ШАГ ФАЙЛА ---
     if step == FILE_STEP:
-        # Проверяем наличие фото или документа
-        if is_photo_file(event) or is_document_file(event):
-            file_obj = event.message.photo or event.message.document
+        file_obj = get_file_from_event(event)
+        if file_obj is not None:
+            # Сохраняем файл
             file_path = save_file(file_obj)
             data['file_path'] = file_path
             set_user_state(user_id_str, -1, data)
