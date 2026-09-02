@@ -180,7 +180,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА (без requests)
+# 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА
 # =========================================================
 def get_file_from_event(event):
     msg = event.message
@@ -213,7 +213,6 @@ def save_file(file_obj):
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
 
-    # Пытаемся скачать через download
     if hasattr(file_obj, 'download'):
         try:
             file_obj.download(file_path)
@@ -221,11 +220,9 @@ def save_file(file_obj):
         except Exception as e:
             logger.error(f"Ошибка download: {e}")
 
-    # Если есть payload.url, скачиваем через urllib
     if hasattr(file_obj, 'payload') and hasattr(file_obj.payload, 'url'):
         url = file_obj.payload.url
         try:
-            # Отключаем проверку SSL для тестов
             ssl_context = ssl._create_unverified_context()
             with urllib.request.urlopen(url, context=ssl_context) as response:
                 with open(file_path, 'wb') as f:
@@ -235,7 +232,6 @@ def save_file(file_obj):
         except Exception as e:
             logger.error(f"Ошибка скачивания по URL: {e}")
 
-    # Если ничего не вышло, сохраняем file_id или имя
     if hasattr(file_obj, 'file_id'):
         return str(file_obj.file_id)
     return name
@@ -304,7 +300,8 @@ async def cmd_help(event):
              "/pending — список заявок\n"
              "/approve <id> [комментарий] — одобрить\n"
              "/reject <id> [комментарий] — отклонить\n"
-             "/stats — статистика"
+             "/stats — статистика\n"
+             "/view <id> — просмотреть заявку"
     )
 
 @dp.message_created(Command(commands=['id']))
@@ -371,6 +368,60 @@ async def cmd_pending(event):
     for row in rows:
         msg += f"ID: {row[0]}, Имя: {row[2]}, Время: {row[-1]}\n"
     await bot.send_message(chat_id=chat_id, text=msg)
+
+@dp.message_created(Command(commands=['view']))
+async def cmd_view(event):
+    chat_id = get_chat_id(event)
+    if chat_id is None:
+        return
+    user_id = get_user_id(event)
+    if user_id is None:
+        await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
+        return
+    if user_id not in ADMIN_IDS:
+        await bot.send_message(chat_id=chat_id, text="⛔ Нет прав.")
+        return
+    args = event.message.body.text.split(maxsplit=1)
+    if len(args) < 2:
+        await bot.send_message(chat_id=chat_id, text="Использование: /view <id>")
+        return
+    try:
+        app_id = int(args[1])
+    except ValueError:
+        await bot.send_message(chat_id=chat_id, text="ID должен быть числом.")
+        return
+    app = get_application_by_id(app_id)
+    if not app:
+        await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
+        return
+    # Формируем текст заявки
+    text = (
+        f"📄 Заявка #{app_id}\n"
+        f"Пользователь: {app[2]}\n"  # full_name
+        f"Суть: {app[3]}\n"          # action_desc
+        f"Польза: {app[4]}\n"        # benefit
+        f"Как пришёл: {app[5]}\n"    # how_came
+        f"Место/время: {app[6]}\n"   # place_time
+        f"Комментарий: {app[7] or '—'}\n"
+        f"Статус: {app[9]}\n"
+        f"Создана: {app[-1]}"
+    )
+    # Если есть файл, отправляем его с текстом
+    if app[8] and os.path.exists(app[8]):
+        ext = os.path.splitext(app[8])[1].lower()
+        is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+        try:
+            if is_image:
+                await bot.send_photo(chat_id=chat_id, photo=app[8], caption=text)
+            else:
+                await bot.send_document(chat_id=chat_id, document=app[8], caption=text)
+            return
+        except Exception as e:
+            logger.error(f"Ошибка отправки файла при просмотре: {e}")
+            # Если не удалось отправить файл, отправляем только текст
+            await bot.send_message(chat_id=chat_id, text=text + f"\nФайл: {app[8]}")
+    else:
+        await bot.send_message(chat_id=chat_id, text=text)
 
 @dp.message_created(Command(commands=['approve']))
 async def cmd_approve(event):
@@ -523,7 +574,7 @@ async def handle_message(event):
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
 
-        # Формируем текст для админа
+        # Формируем полный текст для админа
         admin_text = (
             f"📢 Новая заявка #{app_id}\n"
             f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -533,11 +584,10 @@ async def handle_message(event):
             f"Место/время: {data.get('place_time', 'не указано')}"
         )
 
-        # Отправляем уведомление админу
+        # Отправляем уведомление админу (с файлом или без)
         if data.get('file_path') and os.path.exists(data['file_path']):
             await send_file_to_admin(data['file_path'], admin_text)
         else:
-            # Если файла нет, просто отправляем текст
             for admin_id in ADMIN_IDS:
                 chat_id_admin = admin_chat_ids.get(admin_id)
                 if chat_id_admin:
