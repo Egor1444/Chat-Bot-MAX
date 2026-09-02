@@ -140,7 +140,7 @@ def get_stats():
     return total, pending, approved, rejected
 
 # =========================================================
-# 5. СОСТОЯНИЯ (с состоянием -2 для завершённых заявок)
+# 5. СОСТОЯНИЯ (без подтверждения)
 # =========================================================
 user_states = {}
 
@@ -277,10 +277,7 @@ async def cmd_cancel(event):
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
     user_id_str = str(user_id)
-    state = get_user_state(user_id_str)
-    if state is not None and state['step'] == -2:
-        clear_user_state(user_id_str)
-    elif state is not None:
+    if get_user_state(user_id_str) is not None:
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка отменена.")
     else:
@@ -296,7 +293,7 @@ async def cmd_news(event):
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
     user_id_str = str(user_id)
-    # Очищаем любое состояние
+    # Очищаем состояние, если оно было
     clear_user_state(user_id_str)
     set_user_state(user_id_str, 0)
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
@@ -415,7 +412,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ОСНОВНОЙ ОБРАБОТЧИК
+# 11. ОСНОВНОЙ ОБРАБОТЧИК (без подтверждения)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -428,66 +425,66 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
 
-    # Если состояние завершено (-2) – игнорируем ВСЕ сообщения
-    if state is not None and state['step'] == -2:
-        logger.info(f"⏩ Заявка для {user_id_str} уже завершена, сообщение игнорируется")
-        return
-
     if state is None:
-        logger.info(f"🔄 Сообщение от {user_id_str} вне опроса (состояние отсутствует)")
+        logger.info(f"🔄 Сообщение от {user_id_str} вне опроса")
         return
-
-    logger.info(f"📥 Сообщение от {user_id_str}, шаг {state['step']}")
 
     step = state['step']
     data = state['data']
 
-    # --- ШАГ 5: ФАЙЛ ---
+    # --- ШАГ 5: ФАЙЛ (сразу сохраняем) ---
     if step == FILE_STEP:
         logger.info(f"📂 Обработка шага файла для {user_id_str}")
         file_obj = get_file_from_event(event)
+        file_path = None
+
         if file_obj is not None:
             try:
                 file_path = save_file(file_obj)
                 data['file_path'] = file_path
-                set_user_state(user_id_str, -1, data)
-                summary = (
-                    "📋 Проверьте введённые данные:\n\n"
-                    f"1. ФИО: {data.get('full_name', '—')}\n"
-                    f"2. Суть: {data.get('action_desc', '—')}\n"
-                    f"3. Польза: {data.get('benefit', '—')}\n"
-                    f"4. Как пришли: {data.get('how_came', '—')}\n"
-                    f"5. Место/время: {data.get('place_time', '—')}\n"
-                    f"6. Файл: {os.path.basename(file_path) if file_path else 'не прикреплён'}\n"
-                    "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-                )
-                await bot.send_message(chat_id=chat_id, text=summary)
-                return
+                logger.info(f"📎 Файл сохранён: {file_path}")
             except Exception as e:
                 logger.error(f"Ошибка сохранения файла: {e}")
-                await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз или напишите «Пропустить».")
+                await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз.")
+                return
+        else:
+            # Проверяем, может быть пользователь написал "пропустить"
+            if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
+                text = event.message.body.text.strip().lower()
+                if text == "пропустить":
+                    data['file_path'] = None
+                    logger.info("📎 Файл пропущен")
+                else:
+                    # Если текст не "пропустить", просим файл снова
+                    await bot.send_message(chat_id=chat_id,
+                        text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
+                    return
+            else:
+                await bot.send_message(chat_id=chat_id,
+                    text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
                 return
 
-        if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
-            text = event.message.body.text.strip().lower()
-            if text == "пропустить":
-                data['file_path'] = None
-                set_user_state(user_id_str, -1, data)
-                summary = (
-                    "📋 Проверьте введённые данные:\n\n"
-                    f"1. ФИО: {data.get('full_name', '—')}\n"
-                    f"2. Суть: {data.get('action_desc', '—')}\n"
-                    f"3. Польза: {data.get('benefit', '—')}\n"
-                    f"4. Как пришли: {data.get('how_came', '—')}\n"
-                    f"5. Место/время: {data.get('place_time', '—')}\n"
-                    f"6. Файл: не прикреплён\n"
-                    "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-                )
-                await bot.send_message(chat_id=chat_id, text=summary)
-                return
+        # Сохраняем заявку
+        app_id = save_application(user_id_str, data, data.get('file_path'))
+        clear_user_state(user_id_str)
+        await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
 
-        await bot.send_message(chat_id=chat_id,
-            text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
+        # Уведомление админам
+        admin_text = (
+            f"📢 Новая заявка #{app_id}\n"
+            f"От пользователя: {data.get('full_name', 'не указано')}\n"
+            f"Суть: {data.get('action_desc', 'не указано')}\n"
+            f"Польза: {data.get('benefit', 'не указано')}\n"
+            f"Как пришёл: {data.get('how_came', 'не указано')}\n"
+            f"Место/время: {data.get('place_time', 'не указано')}"
+        )
+        if data.get('file_path'):
+            admin_text += f"\nФайл: {data['file_path']}"
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_text)
+            except Exception as e:
+                logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
         return
 
     # --- ШАГИ 0-4: ОСНОВНЫЕ ВОПРОСЫ ---
@@ -510,44 +507,6 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id,
                 text="Прикрепите фото, подтверждающее событие (если есть). Напишите «Пропустить», чтобы пропустить.")
         return
-
-    # --- ШАГ -1: ПОДТВЕРЖДЕНИЕ ---
-    if step == -1:
-        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
-            await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
-            return
-        text = event.message.body.text.strip().lower()
-        logger.info(f"📝 Получен текст подтверждения: '{text}'")
-
-        if text == "да":
-            app_id = save_application(user_id_str, data, data.get('file_path'))
-            # Устанавливаем состояние в -2 (завершено), чтобы игнорировать все последующие сообщения
-            set_user_state(user_id_str, -2, data)
-            await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
-            admin_text = (
-                f"📢 Новая заявка #{app_id}\n"
-                f"От пользователя: {data.get('full_name', 'не указано')}\n"
-                f"Суть: {data.get('action_desc', 'не указано')}\n"
-                f"Польза: {data.get('benefit', 'не указано')}\n"
-                f"Как пришёл: {data.get('how_came', 'не указано')}\n"
-                f"Место/время: {data.get('place_time', 'не указано')}"
-            )
-            if data.get('file_path'):
-                admin_text += f"\nФайл: {data['file_path']}"
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(chat_id=admin_id, text=admin_text)
-                except Exception as e:
-                    logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
-            # Выходим, чтобы не обрабатывать это сообщение дальше
-            return
-        elif text == "нет":
-            clear_user_state(user_id_str)
-            await bot.send_message(chat_id=chat_id, text="❌ Заявка отменена.")
-            return
-        else:
-            await bot.send_message(chat_id=chat_id, text='Пожалуйста, ответьте "Да" или "Нет".')
-            return
 
     # Если состояние неизвестно
     logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
