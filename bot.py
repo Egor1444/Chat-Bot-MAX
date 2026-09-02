@@ -58,7 +58,7 @@ def get_chat_id(event):
     return None
 
 # =========================================================
-# 4. БАЗА ДАННЫХ (с file_path)
+# 4. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -157,9 +157,11 @@ def clear_user_state(user_id):
     if user_id in user_states:
         del user_states[str(user_id)]
         logger.info(f"🧹 Состояние для {user_id} очищено")
+    else:
+        logger.warning(f"⚠️ Попытка очистить несуществующее состояние для {user_id}")
 
 # =========================================================
-# 6. ВОПРОСЫ (наводящие)
+# 6. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -171,21 +173,16 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 7. ФУНКЦИЯ ПОЛУЧЕНИЯ ФАЙЛА (ПРОВЕРЯЕТ ВСЕ ПОЛЯ)
+# 7. ФУНКЦИЯ ПОЛУЧЕНИЯ ФАЙЛА
 # =========================================================
 def get_file_from_event(event):
-    """Пытается извлечь объект файла из сообщения."""
     msg = event.message
-
-    # 1. Проверяем прямые атрибуты сообщения (основной способ)
     for attr in ['photo', 'document', 'file', 'attachment', 'media']:
         if hasattr(msg, attr):
             val = getattr(msg, attr)
             if val:
                 logger.info(f"✅ Найден файл в поле {attr}: {val}")
                 return val
-
-    # 2. Проверяем body.attachments (если есть)
     if hasattr(msg, 'body'):
         body = msg.body
         if hasattr(body, 'attachments') and body.attachments:
@@ -200,7 +197,6 @@ def get_file_from_event(event):
         if hasattr(body, 'document'):
             logger.info(f"✅ Найден файл в body.document: {body.document}")
             return body.document
-
     logger.warning("❌ Файл не найден в сообщении")
     return None
 
@@ -212,7 +208,6 @@ def save_file(file_obj):
     if hasattr(file_obj, 'download'):
         file_obj.download(file_path)
     elif hasattr(file_obj, 'file_id'):
-        # Если нет метода download, сохраняем file_id как строку
         return str(file_obj.file_id)
     else:
         return name
@@ -305,7 +300,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 10. АДМИН-КОМАНДЫ (без изменений)
+# 10. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
@@ -418,7 +413,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ОБРАБОТЧИК СООБЩЕНИЙ (ОПРОС + ФАЙЛ + ПОДТВЕРЖДЕНИЕ)
+# 11. ОСНОВНОЙ ОБРАБОТЧИК (С ДИАГНОСТИКОЙ)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -431,13 +426,17 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
     
+    # Логируем состояние при каждом входе
     if state is None:
+        logger.info(f"🔄 Сообщение от {user_id_str} вне опроса (состояние отсутствует)")
         return
+    
+    logger.info(f"📥 Сообщение от {user_id_str}, шаг {state['step']}")
 
     step = state['step']
     data = state['data']
 
-    # --- ШАГ 5: ОЖИДАНИЕ ФАЙЛА ---
+    # --- ШАГ 5: ФАЙЛ ---
     if step == FILE_STEP:
         logger.info(f"📂 Обработка шага файла для {user_id_str}")
         file_obj = get_file_from_event(event)
@@ -482,7 +481,6 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text=summary)
                 return
 
-        # Если ничего не подошло
         await bot.send_message(chat_id=chat_id,
             text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
         return
@@ -516,6 +514,7 @@ async def handle_message(event):
         text = event.message.body.text.strip().lower()
         if text == "да":
             app_id = save_application(user_id_str, data, data.get('file_path'))
+            # Очищаем состояние ПЕРЕД отправкой сообщений
             clear_user_state(user_id_str)
             await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
             admin_text = (
@@ -533,7 +532,7 @@ async def handle_message(event):
                     await bot.send_message(chat_id=admin_id, text=admin_text)
                 except Exception as e:
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
-            # После успешной отправки состояние уже очищено, выходим
+            # После отправки сообщений выходим
             return
         elif text == "нет":
             clear_user_state(user_id_str)
@@ -543,8 +542,8 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id, text='Пожалуйста, ответьте "Да" или "Нет".')
             return
 
-    # Если состояние неизвестно (на всякий случай)
-    logger.warning(f"Неизвестное состояние {step} для пользователя {user_id_str}")
+    # Если состояние неизвестно
+    logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
 
 # =========================================================
 # 12. ЗАПУСК
