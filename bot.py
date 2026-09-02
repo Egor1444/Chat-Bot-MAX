@@ -2,7 +2,8 @@ import os
 import uuid
 import logging
 import sqlite3
-import requests as http_requests
+import urllib.request
+import ssl
 from datetime import datetime
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart, Command
@@ -179,7 +180,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА
+# 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА (без requests)
 # =========================================================
 def get_file_from_event(event):
     msg = event.message
@@ -207,31 +208,37 @@ def get_file_from_event(event):
     return None
 
 def save_file(file_obj):
-    # Получаем имя файла
     name = getattr(file_obj, 'filename', None) or getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
-    if '.' in name:
-        ext = name.split('.')[-1]
-    else:
-        ext = ''
+    ext = name.split('.')[-1] if '.' in name else ''
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
+
+    # Пытаемся скачать через download
     if hasattr(file_obj, 'download'):
-        file_obj.download(file_path)
-    elif hasattr(file_obj, 'file_id'):
+        try:
+            file_obj.download(file_path)
+            return file_path
+        except Exception as e:
+            logger.error(f"Ошибка download: {e}")
+
+    # Если есть payload.url, скачиваем через urllib
+    if hasattr(file_obj, 'payload') and hasattr(file_obj.payload, 'url'):
+        url = file_obj.payload.url
+        try:
+            # Отключаем проверку SSL для тестов
+            ssl_context = ssl._create_unverified_context()
+            with urllib.request.urlopen(url, context=ssl_context) as response:
+                with open(file_path, 'wb') as f:
+                    f.write(response.read())
+            logger.info(f"📎 Файл скачан по URL: {file_path}")
+            return file_path
+        except Exception as e:
+            logger.error(f"Ошибка скачивания по URL: {e}")
+
+    # Если ничего не вышло, сохраняем file_id или имя
+    if hasattr(file_obj, 'file_id'):
         return str(file_obj.file_id)
-    else:
-        # Если нет download, пытаемся скачать через payload.url
-        if hasattr(file_obj, 'payload') and hasattr(file_obj.payload, 'url'):
-            try:
-                resp = http_requests.get(file_obj.payload.url, headers={'Authorization': TOKEN}, verify=False)
-                if resp.status_code == 200:
-                    with open(file_path, 'wb') as f:
-                        f.write(resp.content)
-                    return file_path
-            except Exception as e:
-                logger.error(f"Ошибка скачивания файла: {e}")
-        return name
-    return file_path
+    return name
 
 # =========================================================
 # 9. ОТПРАВКА ФАЙЛА АДМИНУ
@@ -275,7 +282,6 @@ async def cmd_start(event):
     if user_id is None:
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
-    # Очищаем состояние
     clear_user_state(str(user_id))
     await bot.send_message(chat_id=chat_id,
         text="👋 Привет! Я бот для подачи новостей.\n"
