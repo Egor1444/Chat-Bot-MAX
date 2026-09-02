@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logger.warning("⚠️ Токен взят из кода.")
+    logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
 
 ADMIN_IDS = [364551480]
 logger.info(f"🔑 Администраторы: {ADMIN_IDS}")
@@ -171,53 +171,51 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 7. ФУНКЦИЯ ПОЛУЧЕНИЯ ФАЙЛА С ДИАГНОСТИКОЙ
+# 7. ФУНКЦИЯ ПОЛУЧЕНИЯ ФАЙЛА (С ПРОВЕРКОЙ body)
 # =========================================================
 def get_file_from_event(event):
-    """Пытается извлечь объект файла с диагностикой."""
+    """Пытается извлечь объект файла из сообщения, проверяя все возможные поля."""
     logger.info("🔍 Поиск файла в сообщении...")
-    # Проверяем все возможные атрибуты
-    if hasattr(event, 'message'):
-        msg = event.message
-        # Печатаем все атрибуты для диагностики
-        logger.info(f"📋 Атрибуты event.message: {dir(msg)}")
-        # Проверяем наличие встроенных полей
-        for attr in ['photo', 'document', 'file', 'attachment', 'media', 'files']:
-            if hasattr(msg, attr):
-                val = getattr(msg, attr)
+    msg = event.message
+
+    # 1. Проверяем прямые атрибуты сообщения
+    for attr in ['photo', 'document', 'file', 'attachment', 'media', 'files']:
+        if hasattr(msg, attr):
+            val = getattr(msg, attr)
+            if val:
+                logger.info(f"✅ Найден файл в поле {attr}: {val}")
+                return val
+
+    # 2. Проверяем атрибуты body (если есть)
+    if hasattr(msg, 'body'):
+        body = msg.body
+        logger.info(f"📋 Атрибуты body: {dir(body)}")
+        for attr in ['file', 'files', 'photo', 'document', 'attachment', 'media']:
+            if hasattr(body, attr):
+                val = getattr(body, attr)
                 if val:
-                    logger.info(f"✅ Найден файл в поле {attr}: {val}")
+                    logger.info(f"✅ Найден файл в body.{attr}: {val}")
                     return val
-        # Проверяем body.file
-        if hasattr(msg, 'body') and hasattr(msg.body, 'file'):
-            return msg.body.file
-        # Проверяем вложенные объекты
-        for attr in ['media', 'attachment']:
-            if hasattr(msg, attr):
-                val = getattr(msg, attr)
-                if val and hasattr(val, 'file_id'):
-                    return val
+        # Если body содержит текст, но файл не найден
+        if hasattr(body, 'text'):
+            logger.info("📝 Тело сообщения содержит текст, файл отсутствует.")
+    else:
+        logger.warning("❌ У сообщения нет атрибута 'body'")
+
     logger.warning("❌ Файл не найден в сообщении")
     return None
 
 def save_file(file_obj):
-    # Определяем имя файла
     name = getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
     ext = name.split('.')[-1] if '.' in name else ''
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
-    # Скачиваем файл
     if hasattr(file_obj, 'download'):
         file_obj.download(file_path)
     elif hasattr(file_obj, 'file_id'):
-        # Может быть другой метод
-        # Здесь нужно уточнить, как скачивать в вашей версии
-        # Пока оставим заглушку
-        logger.warning("⚠️ Метод download не найден, сохраняем только путь")
-        # Если нет download, просто сохраняем file_id как строку
+        # Если нет метода download, сохраняем file_id как текст (для отладки)
         return str(file_obj.file_id)
     else:
-        # Если ничего не работает, сохраняем имя
         return name
     return file_path
 
@@ -434,7 +432,6 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
     
-    # Если состояния нет – игнорируем
     if state is None:
         return
 
@@ -487,7 +484,6 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text=summary)
                 return
 
-        # Если ничего не подошло
         await bot.send_message(chat_id=chat_id,
             text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
         return
