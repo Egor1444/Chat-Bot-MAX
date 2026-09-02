@@ -34,7 +34,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # 3. ФУНКЦИИ ПОЛУЧЕНИЯ ID
 # =========================================================
 def get_user_id(event):
-    """Извлекает user_id из события."""
     if hasattr(event, 'from_user'):
         if hasattr(event.from_user, 'user_id'):
             return event.from_user.user_id
@@ -47,7 +46,6 @@ def get_user_id(event):
     return None
 
 def get_chat_id(event):
-    """Извлекает chat_id для отправки сообщения."""
     if hasattr(event, 'recipient') and hasattr(event.recipient, 'chat_id'):
         return event.recipient.chat_id
     if hasattr(event, 'message') and hasattr(event.message, 'chat_id'):
@@ -56,11 +54,11 @@ def get_chat_id(event):
         return event.chat_id
     if hasattr(event, 'message') and hasattr(event.message, 'recipient'):
         return event.message.recipient.chat_id
-    logger.error(f"Не удалось найти chat_id в событии. Атрибуты: {dir(event)}")
+    logger.error(f"Не удалось найти chat_id в событии.")
     return None
 
 # =========================================================
-# 4. БАЗА ДАННЫХ (с полем file_path)
+# 4. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -161,7 +159,7 @@ def clear_user_state(user_id):
     user_states.pop(str(user_id), None)
 
 # =========================================================
-# 7. НОВЫЕ ВОПРОСЫ (наводящие)
+# 7. ВОПРОСЫ (наводящие)
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -170,13 +168,12 @@ QUESTIONS = [
     ('how_came', 'Как вы пришли к этому? Какие обстоятельства или предпосылки к этому привели?'),
     ('place_time', 'Где и когда произошло событие? Укажите место и дату (город, площадка, время).')
 ]
-FILE_STEP = len(QUESTIONS)  # == 5
+FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 8. ФУНКЦИЯ СОХРАНЕНИЯ ФАЙЛА (ТОЛЬКО ФОТО)
+# 8. ФУНКЦИЯ СОХРАНЕНИЯ ФАЙЛА
 # =========================================================
 def save_file(file_obj):
-    """Сохраняет файл и возвращает путь к нему (только фото и документы)."""
     ext = file_obj.name.split('.')[-1] if '.' in file_obj.name else ''
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -184,11 +181,9 @@ def save_file(file_obj):
     return file_path
 
 def is_photo_file(event):
-    """Проверяет, является ли сообщение файлом с фото."""
     return hasattr(event.message, 'photo') and event.message.photo
 
 def is_document_file(event):
-    """Проверяет, является ли сообщение документом (может быть картинка)."""
     return hasattr(event.message, 'document') and event.message.document
 
 # =========================================================
@@ -204,7 +199,6 @@ dp = Dispatcher()
 async def cmd_start(event):
     chat_id = get_chat_id(event)
     if chat_id is None:
-        await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить chat_id.")
         return
     user_id = get_user_id(event)
     if user_id is None:
@@ -334,10 +328,9 @@ async def cmd_approve(event):
     update_status(app_id, 'approved', feedback)
     await bot.send_message(chat_id=chat_id, text=f"✅ Заявка #{app_id} одобрена.")
     try:
-        user_to_notify = int(app[1])
-        await bot.send_message(chat_id=user_to_notify, text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
-    except Exception as e:
-        logger.error(f"Не удалось уведомить автора заявки {app[1]}: {e}")
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback if feedback else 'нет'}")
+    except:
+        pass
 
 @dp.message_created(Command(commands=['reject']))
 async def cmd_reject(event):
@@ -371,10 +364,9 @@ async def cmd_reject(event):
     update_status(app_id, 'rejected', feedback)
     await bot.send_message(chat_id=chat_id, text=f"❌ Заявка #{app_id} отклонена.")
     try:
-        user_to_notify = int(app[1])
-        await bot.send_message(chat_id=user_to_notify, text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
-    except Exception as e:
-        logger.error(f"Не удалось уведомить автора заявки {app[1]}: {e}")
+        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback if feedback else 'не указана'}")
+    except:
+        pass
 
 @dp.message_created(Command(commands=['stats']))
 async def cmd_stats(event):
@@ -394,7 +386,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 12. ОБРАБОТЧИК ФАЙЛОВ И ОПРОСА
+# 12. ОБРАБОТЧИК СООБЩЕНИЙ (исправлен)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -407,14 +399,14 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
     if state is None:
-        return  # не в процессе опроса
+        return
 
     step = state['step']
     data = state['data']
 
-    # === ШАГ 5: Ожидание файла ===
+    # --- ШАГ ФАЙЛА ---
     if step == FILE_STEP:
-        # Проверяем, есть ли фото или документ
+        # Проверяем наличие фото или документа
         if is_photo_file(event) or is_document_file(event):
             file_obj = event.message.photo or event.message.document
             file_path = save_file(file_obj)
@@ -431,7 +423,7 @@ async def handle_message(event):
                 "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
             )
             await bot.send_message(chat_id=chat_id, text=summary)
-        elif event.message.text and event.message.text.strip().lower() == "пропустить":
+        elif hasattr(event.message, 'body') and hasattr(event.message.body, 'text') and event.message.body.text.strip().lower() == "пропустить":
             data['file_path'] = None
             set_user_state(user_id_str, -1, data)
             summary = (
@@ -450,12 +442,12 @@ async def handle_message(event):
                 text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
         return
 
-    # === ОСНОВНЫЕ ШАГИ (0-4) ===
+    # --- ОСНОВНЫЕ ШАГИ (0-4) ---
     if step < FILE_STEP:
-        if not event.message.text:
+        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
             return
-        text = event.message.text.strip()
+        text = event.message.body.text.strip()
         field = QUESTIONS[step][0]
         data[field] = text
         next_step = step + 1
@@ -468,12 +460,12 @@ async def handle_message(event):
                 text="Прикрепите фото, подтверждающее событие (если есть). Напишите «Пропустить», чтобы пропустить.")
         return
 
-    # === ШАГ -1: ПОДТВЕРЖДЕНИЕ ===
+    # --- ПОДТВЕРЖДЕНИЕ (шаг -1) ---
     if step == -1:
-        if not event.message.text:
+        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
             return
-        text = event.message.text.strip().lower()
+        text = event.message.body.text.strip().lower()
         if text == "да":
             app_id = save_application(user_id_str, data, data.get('file_path'))
             clear_user_state(user_id_str)
