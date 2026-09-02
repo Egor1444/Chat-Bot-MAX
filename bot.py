@@ -23,7 +23,7 @@ if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
 
-ADMIN_IDS = [364551480]   # Ваш user_id
+ADMIN_IDS = [364551480]
 logger.info(f"🔑 Администраторы: {ADMIN_IDS}")
 
 DB_PATH = "news.db"
@@ -54,10 +54,11 @@ def get_chat_id(event):
         return event.chat_id
     if hasattr(event, 'message') and hasattr(event.message, 'recipient'):
         return event.message.recipient.chat_id
+    logger.error("Не удалось найти chat_id")
     return None
 
 # =========================================================
-# 4. БАЗА ДАННЫХ
+# 4. БАЗА ДАННЫХ (с file_path)
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -84,7 +85,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 5. ФУНКЦИИ РАБОТЫ С БД
+# 5. ФУНКЦИИ БАЗЫ
 # =========================================================
 def save_application(user_id, data, file_path=None):
     conn = sqlite3.connect(DB_PATH)
@@ -142,7 +143,7 @@ def get_stats():
     return total, pending, approved, rejected
 
 # =========================================================
-# 6. ХРАНИЛИЩЕ СОСТОЯНИЙ
+# 6. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
 
@@ -158,7 +159,7 @@ def clear_user_state(user_id):
     user_states.pop(str(user_id), None)
 
 # =========================================================
-# 7. ВОПРОСЫ (наводящие)
+# 7. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -170,36 +171,29 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 8. ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛАМИ
+# 8. ФУНКЦИИ РАБОТЫ С ФАЙЛАМИ
 # =========================================================
-def save_file(file_obj):
-    ext = file_obj.name.split('.')[-1] if '.' in file_obj.name else ''
-    filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    file_obj.download(file_path)
-    return file_path
-
 def get_file_from_event(event):
-    """
-    Пытается извлечь файл из события, пробуя разные возможные поля.
-    Возвращает объект файла или None.
-    """
-    # Пробуем стандартные поля maxapi
+    """Извлекает объект файла из события (пробует разные поля)."""
+    # Проверяем наличие файла в различных атрибутах
     if hasattr(event.message, 'photo') and event.message.photo:
         return event.message.photo
     if hasattr(event.message, 'document') and event.message.document:
         return event.message.document
     if hasattr(event.message, 'file') and event.message.file:
         return event.message.file
-    # Пробуем body.file (для некоторых версий)
+    if hasattr(event.message, 'attachment') and event.message.attachment:
+        return event.message.attachment
     if hasattr(event.message, 'body') and hasattr(event.message.body, 'file'):
         return event.message.body.file
-    # Пробуем attachments
-    if hasattr(event.message, 'attachments') and event.message.attachments:
-        return event.message.attachments[0]  # берём первый
-    # Если ничего не найдено, логируем структуру
-    logger.warning(f"Не удалось найти файл в сообщении. Атрибуты event.message: {dir(event.message)}")
     return None
+
+def save_file(file_obj):
+    ext = file_obj.name.split('.')[-1] if '.' in file_obj.name else ''
+    filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    file_obj.download(file_path)
+    return file_path
 
 # =========================================================
 # 9. ИНИЦИАЛИЗАЦИЯ БОТА
@@ -288,7 +282,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 11. АДМИН-КОМАНДЫ
+# 11. АДМИН-КОМАНДЫ (без изменений)
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
@@ -401,7 +395,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 12. ОБРАБОТЧИК СООБЩЕНИЙ (с диагностикой файлов)
+# 12. ОСНОВНОЙ ОБРАБОТЧИК (исправлен)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -423,38 +417,49 @@ async def handle_message(event):
     if step == FILE_STEP:
         file_obj = get_file_from_event(event)
         if file_obj is not None:
-            # Сохраняем файл
-            file_path = save_file(file_obj)
-            data['file_path'] = file_path
-            set_user_state(user_id_str, -1, data)
-            summary = (
-                "📋 Проверьте введённые данные:\n\n"
-                f"1. ФИО: {data.get('full_name', '—')}\n"
-                f"2. Суть: {data.get('action_desc', '—')}\n"
-                f"3. Польза: {data.get('benefit', '—')}\n"
-                f"4. Как пришли: {data.get('how_came', '—')}\n"
-                f"5. Место/время: {data.get('place_time', '—')}\n"
-                f"6. Файл: {os.path.basename(file_path)}\n"
-                "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-            )
-            await bot.send_message(chat_id=chat_id, text=summary)
-        elif hasattr(event.message, 'body') and hasattr(event.message.body, 'text') and event.message.body.text.strip().lower() == "пропустить":
-            data['file_path'] = None
-            set_user_state(user_id_str, -1, data)
-            summary = (
-                "📋 Проверьте введённые данные:\n\n"
-                f"1. ФИО: {data.get('full_name', '—')}\n"
-                f"2. Суть: {data.get('action_desc', '—')}\n"
-                f"3. Польза: {data.get('benefit', '—')}\n"
-                f"4. Как пришли: {data.get('how_came', '—')}\n"
-                f"5. Место/время: {data.get('place_time', '—')}\n"
-                f"6. Файл: не прикреплён\n"
-                "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
-            )
-            await bot.send_message(chat_id=chat_id, text=summary)
-        else:
-            await bot.send_message(chat_id=chat_id,
-                text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
+            try:
+                file_path = save_file(file_obj)
+                data['file_path'] = file_path
+                set_user_state(user_id_str, -1, data)
+                summary = (
+                    "📋 Проверьте введённые данные:\n\n"
+                    f"1. ФИО: {data.get('full_name', '—')}\n"
+                    f"2. Суть: {data.get('action_desc', '—')}\n"
+                    f"3. Польза: {data.get('benefit', '—')}\n"
+                    f"4. Как пришли: {data.get('how_came', '—')}\n"
+                    f"5. Место/время: {data.get('place_time', '—')}\n"
+                    f"6. Файл: {os.path.basename(file_path)}\n"
+                    "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
+                )
+                await bot.send_message(chat_id=chat_id, text=summary)
+                return
+            except Exception as e:
+                logger.error(f"Ошибка сохранения файла: {e}")
+                await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз или напишите «Пропустить».")
+                return
+
+        # Проверяем текстовое сообщение "Пропустить"
+        if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
+            text = event.message.body.text.strip().lower()
+            if text == "пропустить":
+                data['file_path'] = None
+                set_user_state(user_id_str, -1, data)
+                summary = (
+                    "📋 Проверьте введённые данные:\n\n"
+                    f"1. ФИО: {data.get('full_name', '—')}\n"
+                    f"2. Суть: {data.get('action_desc', '—')}\n"
+                    f"3. Польза: {data.get('benefit', '—')}\n"
+                    f"4. Как пришли: {data.get('how_came', '—')}\n"
+                    f"5. Место/время: {data.get('place_time', '—')}\n"
+                    f"6. Файл: не прикреплён\n"
+                    "\nОтправьте «Да» для подтверждения или «Нет» для отмены."
+                )
+                await bot.send_message(chat_id=chat_id, text=summary)
+                return
+
+        # Если ничего не подошло
+        await bot.send_message(chat_id=chat_id,
+            text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
         return
 
     # --- ОСНОВНЫЕ ШАГИ (0-4) ---
@@ -483,8 +488,9 @@ async def handle_message(event):
         text = event.message.body.text.strip().lower()
         if text == "да":
             app_id = save_application(user_id_str, data, data.get('file_path'))
-            clear_user_state(user_id_str)
+            clear_user_state(user_id_str)  # сбрасываем состояние
             await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
+            # Уведомление админам
             admin_text = (
                 f"📢 Новая заявка #{app_id}\n"
                 f"От пользователя: {data.get('full_name', 'не указано')}\n"
