@@ -140,7 +140,7 @@ def get_stats():
     return total, pending, approved, rejected
 
 # =========================================================
-# 5. СОСТОЯНИЯ
+# 5. СОСТОЯНИЯ (с состоянием -2 для завершённых заявок)
 # =========================================================
 user_states = {}
 
@@ -277,7 +277,10 @@ async def cmd_cancel(event):
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
     user_id_str = str(user_id)
-    if get_user_state(user_id_str) is not None:
+    state = get_user_state(user_id_str)
+    if state is not None and state['step'] == -2:
+        clear_user_state(user_id_str)
+    elif state is not None:
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка отменена.")
     else:
@@ -293,7 +296,7 @@ async def cmd_news(event):
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
     user_id_str = str(user_id)
-    # Очищаем любое предыдущее состояние
+    # Очищаем любое состояние
     clear_user_state(user_id_str)
     set_user_state(user_id_str, 0)
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
@@ -412,7 +415,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ОСНОВНОЙ ОБРАБОТЧИК (с защитой от повторного запуска)
+# 11. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -425,7 +428,11 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
 
-    # Если состояние отсутствует – игнорируем
+    # Если состояние завершено (-2) – игнорируем ВСЕ сообщения
+    if state is not None and state['step'] == -2:
+        logger.info(f"⏩ Заявка для {user_id_str} уже завершена, сообщение игнорируется")
+        return
+
     if state is None:
         logger.info(f"🔄 Сообщение от {user_id_str} вне опроса (состояние отсутствует)")
         return
@@ -461,7 +468,6 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз или напишите «Пропустить».")
                 return
 
-        # Проверяем "Пропустить"
         if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
             text = event.message.body.text.strip().lower()
             if text == "пропустить":
@@ -505,7 +511,7 @@ async def handle_message(event):
                 text="Прикрепите фото, подтверждающее событие (если есть). Напишите «Пропустить», чтобы пропустить.")
         return
 
-    # --- ШАГ -1: ПОДТВЕРЖДЕНИЕ (с полным выходом) ---
+    # --- ШАГ -1: ПОДТВЕРЖДЕНИЕ ---
     if step == -1:
         if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
@@ -515,8 +521,8 @@ async def handle_message(event):
 
         if text == "да":
             app_id = save_application(user_id_str, data, data.get('file_path'))
-            # Удаляем состояние полностью, чтобы больше не обрабатывать это сообщение
-            clear_user_state(user_id_str)
+            # Устанавливаем состояние в -2 (завершено), чтобы игнорировать все последующие сообщения
+            set_user_state(user_id_str, -2, data)
             await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
             admin_text = (
                 f"📢 Новая заявка #{app_id}\n"
@@ -533,7 +539,7 @@ async def handle_message(event):
                     await bot.send_message(chat_id=admin_id, text=admin_text)
                 except Exception as e:
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
-            # ВАЖНО: выход из функции после обработки
+            # Выходим, чтобы не обрабатывать это сообщение дальше
             return
         elif text == "нет":
             clear_user_state(user_id_str)
@@ -543,9 +549,8 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id, text='Пожалуйста, ответьте "Да" или "Нет".')
             return
 
-    # Если состояние неизвестно – логируем и выходим
+    # Если состояние неизвестно
     logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
-    return
 
 # =========================================================
 # 12. ЗАПУСК
