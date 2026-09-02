@@ -140,7 +140,7 @@ def get_stats():
     return total, pending, approved, rejected
 
 # =========================================================
-# 5. СОСТОЯНИЯ (без подтверждения)
+# 5. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
 
@@ -214,13 +214,38 @@ def save_file(file_obj):
     return file_path
 
 # =========================================================
-# 8. БОТ
+# 8. ОТПРАВКА ФАЙЛА АДМИНУ
+# =========================================================
+async def send_file_to_admin(file_path, caption):
+    """Отправляет файл админу с подписью."""
+    # Определяем тип файла по расширению
+    ext = os.path.splitext(file_path)[1].lower()
+    is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+    # Открываем файл для чтения
+    try:
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        # Для фото используем send_photo, для остальных – send_document
+        for admin_id in ADMIN_IDS:
+            if is_image:
+                await bot.send_photo(chat_id=admin_id, photo=file_data, caption=caption)
+            else:
+                await bot.send_document(chat_id=admin_id, document=file_data, caption=caption)
+        logger.info(f"📎 Файл отправлен админу: {file_path}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки файла админу: {e}")
+        # В случае ошибки отправляем хотя бы текст с путём
+        for admin_id in ADMIN_IDS:
+            await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл: {file_path}")
+
+# =========================================================
+# 9. БОТ
 # =========================================================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 9. КОМАНДЫ
+# 10. КОМАНДЫ
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
@@ -293,13 +318,12 @@ async def cmd_news(event):
         await bot.send_message(chat_id=chat_id, text="Ошибка: не удалось определить ваш ID.")
         return
     user_id_str = str(user_id)
-    # Очищаем состояние, если оно было
     clear_user_state(user_id_str)
     set_user_state(user_id_str, 0)
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 10. АДМИН-КОМАНДЫ (без изменений)
+# 11. АДМИН-КОМАНДЫ (без изменений)
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
@@ -412,7 +436,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ОСНОВНОЙ ОБРАБОТЧИК (без подтверждения)
+# 12. ОСНОВНОЙ ОБРАБОТЧИК (с отправкой файла админу)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -432,7 +456,7 @@ async def handle_message(event):
     step = state['step']
     data = state['data']
 
-    # --- ШАГ 5: ФАЙЛ (сразу сохраняем) ---
+    # --- ШАГ 5: ФАЙЛ (сохраняем и сразу отправляем заявку) ---
     if step == FILE_STEP:
         logger.info(f"📂 Обработка шага файла для {user_id_str}")
         file_obj = get_file_from_event(event)
@@ -448,14 +472,13 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл. Попробуйте ещё раз.")
                 return
         else:
-            # Проверяем, может быть пользователь написал "пропустить"
+            # Проверяем "пропустить"
             if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
                 text = event.message.body.text.strip().lower()
                 if text == "пропустить":
                     data['file_path'] = None
                     logger.info("📎 Файл пропущен")
                 else:
-                    # Если текст не "пропустить", просим файл снова
                     await bot.send_message(chat_id=chat_id,
                         text="Пожалуйста, прикрепите фото (или документ) или напишите «Пропустить».")
                     return
@@ -469,7 +492,7 @@ async def handle_message(event):
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка успешно отправлена на модерацию!")
 
-        # Уведомление админам
+        # Формируем текст для админа
         admin_text = (
             f"📢 Новая заявка #{app_id}\n"
             f"От пользователя: {data.get('full_name', 'не указано')}\n"
@@ -478,13 +501,17 @@ async def handle_message(event):
             f"Как пришёл: {data.get('how_came', 'не указано')}\n"
             f"Место/время: {data.get('place_time', 'не указано')}"
         )
-        if data.get('file_path'):
-            admin_text += f"\nФайл: {data['file_path']}"
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(chat_id=admin_id, text=admin_text)
-            except Exception as e:
-                logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+        # Если есть файл, отправляем его админу
+        if data.get('file_path') and os.path.exists(data['file_path']):
+            await send_file_to_admin(data['file_path'], admin_text)
+        else:
+            # Если файла нет, просто отправляем текст
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=admin_text)
+                except Exception as e:
+                    logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
         return
 
     # --- ШАГИ 0-4: ОСНОВНЫЕ ВОПРОСЫ ---
@@ -512,7 +539,7 @@ async def handle_message(event):
     logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
 
 # =========================================================
-# 12. ЗАПУСК
+# 13. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
