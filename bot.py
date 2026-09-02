@@ -300,7 +300,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 10. АДМИН-КОМАНДЫ
+# 10. АДМИН-КОМАНДЫ (без изменений)
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
@@ -413,7 +413,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 11. ОСНОВНОЙ ОБРАБОТЧИК (С ДИАГНОСТИКОЙ)
+# 11. ОСНОВНОЙ ОБРАБОТЧИК (С ИСПРАВЛЕНИЕМ ПОДТВЕРЖДЕНИЯ)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -426,7 +426,6 @@ async def handle_message(event):
     user_id_str = str(user_id)
     state = get_user_state(user_id_str)
     
-    # Логируем состояние при каждом входе
     if state is None:
         logger.info(f"🔄 Сообщение от {user_id_str} вне опроса (состояние отсутствует)")
         return
@@ -506,12 +505,14 @@ async def handle_message(event):
                 text="Прикрепите фото, подтверждающее событие (если есть). Напишите «Пропустить», чтобы пропустить.")
         return
 
-    # --- ШАГ -1: ПОДТВЕРЖДЕНИЕ ---
+    # --- ШАГ -1: ПОДТВЕРЖДЕНИЕ (С ЛОГИРОВАНИЕМ) ---
     if step == -1:
         if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Пожалуйста, отправьте текстовое сообщение.")
             return
         text = event.message.body.text.strip().lower()
+        logger.info(f"📝 Получен текст подтверждения: '{text}'")
+        
         if text == "да":
             app_id = save_application(user_id_str, data, data.get('file_path'))
             # Очищаем состояние ПЕРЕД отправкой сообщений
@@ -532,7 +533,7 @@ async def handle_message(event):
                     await bot.send_message(chat_id=admin_id, text=admin_text)
                 except Exception as e:
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
-            # После отправки сообщений выходим
+            # Завершаем обработку, чтобы не обрабатывать это сообщение дальше
             return
         elif text == "нет":
             clear_user_state(user_id_str)
