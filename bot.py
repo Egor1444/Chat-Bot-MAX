@@ -237,7 +237,7 @@ def save_file(file_obj):
     return name
 
 # =========================================================
-# 9. ОТПРАВКА ФАЙЛА АДМИНУ
+# 9. ОТПРАВКА ФАЙЛА АДМИНУ (с байтами)
 # =========================================================
 async def send_file_to_admin(file_path, caption):
     ext = os.path.splitext(file_path)[1].lower()
@@ -248,13 +248,17 @@ async def send_file_to_admin(file_path, caption):
             logger.warning(f"⚠️ Chat_id для администратора {admin_id} не найден, пропускаем отправку файла.")
             continue
         try:
+            # Читаем файл в байты
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
             if is_image:
-                await bot.send_photo(chat_id=chat_id, photo=file_path, caption=caption)
+                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=caption)
             else:
-                await bot.send_document(chat_id=chat_id, document=file_path, caption=caption)
+                await bot.send_document(chat_id=chat_id, document=file_data, caption=caption)
             logger.info(f"📎 Файл отправлен админу {admin_id} (chat_id={chat_id})")
         except Exception as e:
             logger.error(f"Ошибка отправки файла админу {admin_id}: {e}")
+            # Если не удалось отправить файл, отправляем текст с путём
             try:
                 await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл: {file_path}")
             except:
@@ -394,31 +398,30 @@ async def cmd_view(event):
     if not app:
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
-    # Формируем текст заявки
     text = (
         f"📄 Заявка #{app_id}\n"
-        f"Пользователь: {app[2]}\n"  # full_name
-        f"Суть: {app[3]}\n"          # action_desc
-        f"Польза: {app[4]}\n"        # benefit
-        f"Как пришёл: {app[5]}\n"    # how_came
-        f"Место/время: {app[6]}\n"   # place_time
+        f"Пользователь: {app[2]}\n"
+        f"Суть: {app[3]}\n"
+        f"Польза: {app[4]}\n"
+        f"Как пришёл: {app[5]}\n"
+        f"Место/время: {app[6]}\n"
         f"Комментарий: {app[7] or '—'}\n"
         f"Статус: {app[9]}\n"
         f"Создана: {app[-1]}"
     )
-    # Если есть файл, отправляем его с текстом
     if app[8] and os.path.exists(app[8]):
         ext = os.path.splitext(app[8])[1].lower()
         is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
         try:
+            with open(app[8], 'rb') as f:
+                file_data = f.read()
             if is_image:
-                await bot.send_photo(chat_id=chat_id, photo=app[8], caption=text)
+                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=text)
             else:
-                await bot.send_document(chat_id=chat_id, document=app[8], caption=text)
+                await bot.send_document(chat_id=chat_id, document=file_data, caption=text)
             return
         except Exception as e:
             logger.error(f"Ошибка отправки файла при просмотре: {e}")
-            # Если не удалось отправить файл, отправляем только текст
             await bot.send_message(chat_id=chat_id, text=text + f"\nФайл: {app[8]}")
     else:
         await bot.send_message(chat_id=chat_id, text=text)
