@@ -138,9 +138,9 @@ def get_stats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
-    pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"").fetchone()[0]
-    approved = c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"').fetchone()[0]
-    rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
+    pending = c.execute("SELECT COUNT(*) FROM news WHERE status = 'pending'").fetchone()[0]
+    approved = c.execute("SELECT COUNT(*) FROM news WHERE status = 'approved'").fetchone()[0]
+    rejected = c.execute("SELECT COUNT(*) FROM news WHERE status = 'rejected'").fetchone()[0]
     conn.close()
     return total, pending, approved, rejected
 
@@ -206,7 +206,6 @@ def get_file_from_event(event):
     return None
 
 def save_file(file_obj):
-    # Определяем имя файла и расширение
     name = getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
     if '.' in name:
         ext = name.split('.')[-1]
@@ -217,17 +216,15 @@ def save_file(file_obj):
     if hasattr(file_obj, 'download'):
         file_obj.download(file_path)
     elif hasattr(file_obj, 'file_id'):
-        # Если нет download, сохраняем file_id как строку
         return str(file_obj.file_id)
     else:
         return name
     return file_path
 
 # =========================================================
-# 9. ОТПРАВКА ФАЙЛА АДМИНУ (с правильным chat_id)
+# 9. ОТПРАВКА ФАЙЛА АДМИНУ
 # =========================================================
 async def send_file_to_admin(file_path, caption):
-    """Отправляет файл админу с подписью, используя сохранённый chat_id."""
     ext = os.path.splitext(file_path)[1].lower()
     is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
     try:
@@ -235,21 +232,16 @@ async def send_file_to_admin(file_path, caption):
             file_data = f.read()
     except Exception as e:
         logger.error(f"Не удалось прочитать файл {file_path}: {e}")
-        # Отправляем только текст
         for admin_id in ADMIN_IDS:
-            await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл не удалось отправить.")
+            chat_id = admin_chat_ids.get(admin_id)
+            if chat_id:
+                await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл не удалось отправить.")
         return
 
     for admin_id in ADMIN_IDS:
-        # Берём chat_id из сохранённого словаря, если есть
         chat_id = admin_chat_ids.get(admin_id)
         if not chat_id:
             logger.warning(f"⚠️ Chat_id для администратора {admin_id} не найден, пропускаем отправку файла.")
-            # Пытаемся отправить просто текст на user_id (может не работать)
-            try:
-                await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл: {file_path}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
             continue
         try:
             if is_image:
@@ -259,7 +251,6 @@ async def send_file_to_admin(file_path, caption):
             logger.info(f"📎 Файл отправлен админу {admin_id} (chat_id={chat_id})")
         except Exception as e:
             logger.error(f"Ошибка отправки файла админу {admin_id}: {e}")
-            # В случае ошибки отправляем текст с путём
             try:
                 await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл: {file_path}")
             except:
