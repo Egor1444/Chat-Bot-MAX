@@ -31,7 +31,12 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # =========================================================
-# 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 3. ХРАНИЛИЩЕ CHAT_ID АДМИНОВ
+# =========================================================
+admin_chat_ids = {}  # {user_id: chat_id}
+
+# =========================================================
+# 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
 def get_user_id(event):
     if hasattr(event, 'from_user'):
@@ -58,7 +63,7 @@ def get_chat_id(event):
     return None
 
 # =========================================================
-# 4. БАЗА ДАННЫХ
+# 5. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -133,14 +138,14 @@ def get_stats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
-    pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"').fetchone()[0]
+    pending = c.execute('SELECT COUNT(*) FROM news WHERE status = "pending"").fetchone()[0]
     approved = c.execute('SELECT COUNT(*) FROM news WHERE status = "approved"').fetchone()[0]
     rejected = c.execute('SELECT COUNT(*) FROM news WHERE status = "rejected"').fetchone()[0]
     conn.close()
     return total, pending, approved, rejected
 
 # =========================================================
-# 5. СОСТОЯНИЯ
+# 6. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
 
@@ -161,7 +166,7 @@ def clear_user_state(user_id):
         logger.warning(f"⚠️ Попытка очистить несуществующее состояние для {user_id}")
 
 # =========================================================
-# 6. ВОПРОСЫ
+# 7. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -173,7 +178,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)  # 5
 
 # =========================================================
-# 7. ФУНКЦИЯ ПОЛУЧЕНИЯ ФАЙЛА
+# 8. ФУНКЦИЯ ПОЛУЧЕНИЯ И СОХРАНЕНИЯ ФАЙЛА
 # =========================================================
 def get_file_from_event(event):
     msg = event.message
@@ -201,51 +206,73 @@ def get_file_from_event(event):
     return None
 
 def save_file(file_obj):
+    # Определяем имя файла и расширение
     name = getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
-    ext = name.split('.')[-1] if '.' in name else ''
+    if '.' in name:
+        ext = name.split('.')[-1]
+    else:
+        ext = ''
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     if hasattr(file_obj, 'download'):
         file_obj.download(file_path)
     elif hasattr(file_obj, 'file_id'):
+        # Если нет download, сохраняем file_id как строку
         return str(file_obj.file_id)
     else:
         return name
     return file_path
 
 # =========================================================
-# 8. ОТПРАВКА ФАЙЛА АДМИНУ
+# 9. ОТПРАВКА ФАЙЛА АДМИНУ (с правильным chat_id)
 # =========================================================
 async def send_file_to_admin(file_path, caption):
-    """Отправляет файл админу с подписью."""
-    # Определяем тип файла по расширению
+    """Отправляет файл админу с подписью, используя сохранённый chat_id."""
     ext = os.path.splitext(file_path)[1].lower()
     is_image = ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-    # Открываем файл для чтения
     try:
         with open(file_path, 'rb') as f:
             file_data = f.read()
-        # Для фото используем send_photo, для остальных – send_document
-        for admin_id in ADMIN_IDS:
-            if is_image:
-                await bot.send_photo(chat_id=admin_id, photo=file_data, caption=caption)
-            else:
-                await bot.send_document(chat_id=admin_id, document=file_data, caption=caption)
-        logger.info(f"📎 Файл отправлен админу: {file_path}")
     except Exception as e:
-        logger.error(f"Ошибка отправки файла админу: {e}")
-        # В случае ошибки отправляем хотя бы текст с путём
+        logger.error(f"Не удалось прочитать файл {file_path}: {e}")
+        # Отправляем только текст
         for admin_id in ADMIN_IDS:
-            await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл: {file_path}")
+            await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл не удалось отправить.")
+        return
+
+    for admin_id in ADMIN_IDS:
+        # Берём chat_id из сохранённого словаря, если есть
+        chat_id = admin_chat_ids.get(admin_id)
+        if not chat_id:
+            logger.warning(f"⚠️ Chat_id для администратора {admin_id} не найден, пропускаем отправку файла.")
+            # Пытаемся отправить просто текст на user_id (может не работать)
+            try:
+                await bot.send_message(chat_id=admin_id, text=caption + f"\nФайл: {file_path}")
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+            continue
+        try:
+            if is_image:
+                await bot.send_photo(chat_id=chat_id, photo=file_data, caption=caption)
+            else:
+                await bot.send_document(chat_id=chat_id, document=file_data, caption=caption)
+            logger.info(f"📎 Файл отправлен админу {admin_id} (chat_id={chat_id})")
+        except Exception as e:
+            logger.error(f"Ошибка отправки файла админу {admin_id}: {e}")
+            # В случае ошибки отправляем текст с путём
+            try:
+                await bot.send_message(chat_id=chat_id, text=caption + f"\nФайл: {file_path}")
+            except:
+                pass
 
 # =========================================================
-# 9. БОТ
+# 10. БОТ
 # =========================================================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 10. КОМАНДЫ
+# 11. КОМАНДЫ
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
@@ -323,7 +350,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 11. АДМИН-КОМАНДЫ (без изменений)
+# 12. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['pending']))
 async def cmd_pending(event):
@@ -436,7 +463,7 @@ async def cmd_stats(event):
     )
 
 # =========================================================
-# 12. ОСНОВНОЙ ОБРАБОТЧИК (с отправкой файла админу)
+# 13. ОСНОВНОЙ ОБРАБОТЧИК (с сохранением chat_id админа)
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -447,8 +474,13 @@ async def handle_message(event):
     if user_id is None:
         return
     user_id_str = str(user_id)
-    state = get_user_state(user_id_str)
 
+    # Сохраняем chat_id администратора
+    if user_id in ADMIN_IDS:
+        admin_chat_ids[user_id] = chat_id
+        logger.info(f"👤 Сохранён chat_id для администратора {user_id}: {chat_id}")
+
+    state = get_user_state(user_id_str)
     if state is None:
         logger.info(f"🔄 Сообщение от {user_id_str} вне опроса")
         return
@@ -502,16 +534,20 @@ async def handle_message(event):
             f"Место/время: {data.get('place_time', 'не указано')}"
         )
 
-        # Если есть файл, отправляем его админу
+        # Отправляем уведомление админу
         if data.get('file_path') and os.path.exists(data['file_path']):
             await send_file_to_admin(data['file_path'], admin_text)
         else:
             # Если файла нет, просто отправляем текст
             for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(chat_id=admin_id, text=admin_text)
-                except Exception as e:
-                    logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+                chat_id_admin = admin_chat_ids.get(admin_id)
+                if chat_id_admin:
+                    try:
+                        await bot.send_message(chat_id=chat_id_admin, text=admin_text)
+                    except Exception as e:
+                        logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+                else:
+                    logger.warning(f"⚠️ Chat_id для админа {admin_id} не найден, пропускаем уведомление.")
         return
 
     # --- ШАГИ 0-4: ОСНОВНЫЕ ВОПРОСЫ ---
@@ -539,7 +575,7 @@ async def handle_message(event):
     logger.warning(f"⚠️ Неизвестное состояние {step} для {user_id_str}")
 
 # =========================================================
-# 13. ЗАПУСК
+# 14. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
