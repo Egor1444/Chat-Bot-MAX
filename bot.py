@@ -26,7 +26,12 @@ if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода.")
 
-ADMIN_IDS = [364551480]
+# Список ID всех администраторов
+ADMIN_IDS = [364551480]   # добавляйте сюда ID других админов
+
+# Один общий пароль для всех админов
+ADMIN_PASSWORD = "admin123"   # ← поменяйте на свой
+
 API_BASE = "https://platform-api2.max.ru"
 DB_PATH = "news.db"
 UPLOAD_DIR = "uploads"
@@ -35,12 +40,13 @@ PAGE_SIZE = 5
 
 admin_chat_ids = {}
 greeted_users = set()
+admin_authenticated = set()   # сюда попадают user_id, успешно введшие пароль
 
 # =========================================================
 # 3. СЛОВАРЬ СТАТУСОВ
 # =========================================================
 STATUS_RU = {
-    "pending": "⏳ На модерации",
+    "pending":  "⏳ На модерации",
     "approved": "✅ Одобрено",
     "rejected": "❌ Отклонено",
 }
@@ -49,34 +55,26 @@ def status_ru(status):
     return STATUS_RU.get(status, status)
 
 # =========================================================
-# 4. УСТАНОВКА СПИСКА КОМАНД БОТА (для автоподсказки при "/")
+# 4. УСТАНОВКА СПИСКА КОМАНД
 # =========================================================
 def set_bot_commands():
-    """
-    Устанавливает список команд в меню бота MAX.
-    После этого при вводе "/" пользователь увидит подсказки.
-    """
     url = f"{API_BASE}/me/commands"
-    headers = {
-        "Authorization": TOKEN,
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": TOKEN, "Content-Type": "application/json"}
     commands = [
-        {"name": "start",    "description": "Приветствие и список команд"},
-        {"name": "news",     "description": "Подать новость"},
-        {"name": "cancel",   "description": "Отменить текущую заявку"},
-        {"name": "help",     "description": "Справка по командам"},
-        {"name": "id",       "description": "Показать ваш ID"},
-        # Команды администратора (появятся у всех, но выполняются только админами)
-        {"name": "list",     "description": "Список заявок (админ)"},
-        {"name": "pending",  "description": "Заявки на модерации (админ)"},
-        {"name": "view",     "description": "Просмотр заявки по ID (админ)"},
-        {"name": "approve",  "description": "Одобрить заявку (админ)"},
-        {"name": "reject",   "description": "Отклонить заявку (админ)"},
-        {"name": "stats",    "description": "Статистика (админ)"},
+        {"name": "start",   "description": "Приветствие и список команд"},
+        {"name": "news",    "description": "Подать новость"},
+        {"name": "cancel",  "description": "Отменить текущую заявку"},
+        {"name": "help",    "description": "Справка по командам"},
+        {"name": "id",      "description": "Показать ваш ID"},
+        {"name": "admin",   "description": "Вход в админ-панель"},
+        {"name": "logout",  "description": "Выйти из админ-панели"},
+        {"name": "list",    "description": "Список заявок (админ)"},
+        {"name": "pending", "description": "Заявки на модерации (админ)"},
+        {"name": "view",    "description": "Просмотр заявки по ID (админ)"},
+        {"name": "approve", "description": "Одобрить заявку (админ)"},
+        {"name": "reject",  "description": "Отклонить заявку (админ)"},
+        {"name": "stats",   "description": "Статистика (админ)"},
     ]
-
-    # Пробуем несколько возможных эндпоинтов — разные версии API MAX
     endpoints = [
         (f"{API_BASE}/me/commands", "PATCH"),
         (f"{API_BASE}/me/commands", "PUT"),
@@ -92,10 +90,8 @@ def set_bot_commands():
                     logger.info(f"✅ Команды установлены через {method} {ep_url}")
                     return True
         except Exception as e:
-            logger.debug(f"Не удалось установить команды через {method} {ep_url}: {e}")
-
-    logger.warning("⚠️ API MAX не поддерживает установку команд бота — "
-                   "подсказки при '/' не появятся. Всё остальное работает.")
+            logger.debug(f"Не удалось через {method} {ep_url}: {e}")
+    logger.warning("⚠️ API MAX не поддерживает установку команд бота.")
     return False
 
 # =========================================================
@@ -177,11 +173,9 @@ def filter_applications(status=None, period=None, sort_new_first=True, limit=Non
     c = conn.cursor()
     query = "SELECT * FROM news WHERE 1=1"
     params = []
-
     if status:
         query += " AND status = ?"
         params.append(status)
-
     if period:
         now = datetime.now()
         if period == "today":
@@ -195,14 +189,11 @@ def filter_applications(status=None, period=None, sort_new_first=True, limit=Non
         if start:
             query += " AND created_at >= ?"
             params.append(start.strftime("%Y-%m-%d %H:%M:%S"))
-
     order = "DESC" if sort_new_first else "ASC"
     query += f" ORDER BY created_at {order}"
-
     if limit is not None:
         query += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()
@@ -213,11 +204,9 @@ def count_filtered(status=None, period=None):
     c = conn.cursor()
     query = "SELECT COUNT(*) FROM news WHERE 1=1"
     params = []
-
     if status:
         query += " AND status = ?"
         params.append(status)
-
     if period:
         now = datetime.now()
         if period == "today":
@@ -231,7 +220,6 @@ def count_filtered(status=None, period=None):
         if start:
             query += " AND created_at >= ?"
             params.append(start.strftime("%Y-%m-%d %H:%M:%S"))
-
     c.execute(query, params)
     count = c.fetchone()[0]
     conn.close()
@@ -241,6 +229,8 @@ def count_filtered(status=None, period=None):
 # 6. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
+
+WAITING_ADMIN_PASSWORD = -100
 
 def get_user_state(user_id):
     return user_states.get(str(user_id))
@@ -295,6 +285,9 @@ def get_chat_id(event):
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
+
+def is_admin_authorized(user_id):
+    return user_id in ADMIN_IDS and user_id in admin_authenticated
 
 def get_file_from_event(event):
     msg = event.message
@@ -362,22 +355,32 @@ async def send_greeting(chat_id, user_id=None):
     )
     if user_id and user_id in ADMIN_IDS:
         text += (
-            "\n🔐 Панель администратора:\n"
-            "🔹 /list [статус] [период] [страница]\n"
-            "   статус: pending | approved | rejected | all\n"
-            "   период: today | week | month | all\n"
-            "🔹 /pending — список заявок на модерации\n"
-            "🔹 /view <id> — просмотреть заявку\n"
-            "🔹 /stats — статистика\n"
-            "🔹 /approve <id> [комментарий] — одобрить\n"
-            "🔹 /reject <id> [комментарий] — отклонить"
+            "\n🔐 Для администраторов:\n"
+            "🔹 /admin — войти в админ-панель (по паролю)\n"
+            "🔹 /logout — выйти из админ-панели\n"
         )
-    text += "\n\n💡 Совет: введите «/», чтобы увидеть список команд."
+    text += "\n\n💡 Введите «/», чтобы увидеть список команд."
     await bot.send_message(chat_id=chat_id, text=text)
     greeted_users.add(str(user_id))
 
+async def send_admin_menu(chat_id):
+    text = (
+        "🔐 Вы вошли в админ-панель.\n\n"
+        "📌 Доступные команды:\n"
+        "🔹 /list [статус] [период] [страница] — список заявок\n"
+        "   статус: pending | approved | rejected | all\n"
+        "   период: today | week | month | all\n"
+        "🔹 /pending — список заявок на модерации\n"
+        "🔹 /view <id> — просмотреть заявку\n"
+        "🔹 /stats — статистика\n"
+        "🔹 /approve <id> [комментарий] — одобрить\n"
+        "🔹 /reject <id> [комментарий] — отклонить\n"
+        "🔹 /logout — выйти из админ-панели"
+    )
+    await bot.send_message(chat_id=chat_id, text=text)
+
 # =========================================================
-# 11. КОМАНДЫ
+# 11. ОБЩИЕ КОМАНДЫ
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
@@ -403,15 +406,7 @@ async def cmd_help(event):
         "/id — ваш ID\n"
     )
     if is_admin(user_id):
-        text += (
-            "\n🔹 Для администраторов:\n"
-            "/list [статус] [период] [страница] — список заявок\n"
-            "/pending — только заявки на модерации\n"
-            "/view <id> — просмотр заявки\n"
-            "/stats — статистика\n"
-            "/approve <id> [комментарий] — одобрить\n"
-            "/reject <id> [комментарий] — отклонить\n"
-        )
+        text += "\n🔹 Для администраторов:\n/admin — вход в панель, /logout — выход\n"
     text += "\n💡 Введите «/», чтобы увидеть список команд."
     await bot.send_message(chat_id=chat_id, text=text)
 
@@ -422,7 +417,8 @@ async def cmd_id(event):
     if chat_id is None or user_id is None:
         return
     role = "администратор ✅" if user_id in ADMIN_IDS else "пользователь"
-    await bot.send_message(chat_id=chat_id, text=f"Ваш ID: {user_id}\nРоль: {role}")
+    auth = "авторизован" if user_id in admin_authenticated else "не авторизован"
+    await bot.send_message(chat_id=chat_id, text=f"Ваш ID: {user_id}\nРоль: {role}\nСтатус админа: {auth}")
 
 @dp.message_created(Command(commands=['cancel']))
 async def cmd_cancel(event):
@@ -447,23 +443,66 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 12. АДМИН-КОМАНДЫ
+# 12. ВХОД / ВЫХОД ИЗ АДМИНКИ
 # =========================================================
-@dp.message_created(Command(commands=['list']))
-async def cmd_list(event):
+@dp.message_created(Command(commands=['admin']))
+async def cmd_admin(event):
     chat_id = get_chat_id(event)
     user_id = get_user_id(event)
     if chat_id is None or user_id is None:
         return
     if not is_admin(user_id):
-        await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
+        await bot.send_message(chat_id=chat_id, text="⛔ Доступ запрещён.")
         return
+    if user_id in admin_authenticated:
+        await bot.send_message(chat_id=chat_id, text="🔓 Вы уже авторизованы.")
+        await send_admin_menu(chat_id)
+        return
+    set_user_state(str(user_id), WAITING_ADMIN_PASSWORD)
+    await bot.send_message(chat_id=chat_id, text="🔐 Введите пароль администратора:")
 
+@dp.message_created(Command(commands=['logout']))
+async def cmd_logout(event):
+    chat_id = get_chat_id(event)
+    user_id = get_user_id(event)
+    if chat_id is None or user_id is None:
+        return
+    if user_id in admin_authenticated:
+        admin_authenticated.discard(user_id)
+        await bot.send_message(chat_id=chat_id, text="🔒 Вы вышли из админ-панели.")
+    else:
+        await bot.send_message(chat_id=chat_id, text="Вы не авторизованы.")
+
+def admin_required(func):
+    """Декоратор для админ-команд, требующих авторизации."""
+    async def wrapper(event):
+        chat_id = get_chat_id(event)
+        user_id = get_user_id(event)
+        if chat_id is None or user_id is None:
+            return
+        if not is_admin(user_id):
+            await bot.send_message(chat_id=chat_id, text="⛔ Доступ запрещён.")
+            return
+        if user_id not in admin_authenticated:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="🔒 Требуется авторизация. Введите /admin и укажите пароль."
+            )
+            return
+        return await func(event)
+    return wrapper
+
+# =========================================================
+# 13. АДМИН-КОМАНДЫ
+# =========================================================
+@dp.message_created(Command(commands=['list']))
+@admin_required
+async def cmd_list(event):
+    chat_id = get_chat_id(event)
     args = event.message.body.text.split()
     status = None
     period = None
     page = 1
-
     for a in args[1:]:
         a_lower = a.lower()
         if a_lower in ('pending', 'approved', 'rejected', 'all'):
@@ -477,14 +516,11 @@ async def cmd_list(event):
     if total == 0:
         await bot.send_message(chat_id=chat_id, text="Нет заявок по заданным фильтрам.")
         return
-
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
     page = max(1, min(page, total_pages))
     offset = (page - 1) * PAGE_SIZE
-
     rows = filter_applications(status=status, period=period, sort_new_first=True,
                                limit=PAGE_SIZE, offset=offset)
-
     st = status if status else "все"
     pd = period if period else "все"
     msg = f"📋 Заявки (статус: {st}, период: {pd}, стр. {page}/{total_pages}):\n\n"
@@ -499,20 +535,15 @@ async def cmd_list(event):
     await bot.send_message(chat_id=chat_id, text=msg)
 
 @dp.message_created(Command(commands=['pending']))
+@admin_required
 async def cmd_pending(event):
     event.message.body.text = "/list pending"
     await cmd_list(event)
 
 @dp.message_created(Command(commands=['view']))
+@admin_required
 async def cmd_view(event):
     chat_id = get_chat_id(event)
-    user_id = get_user_id(event)
-    if chat_id is None or user_id is None:
-        return
-    if not is_admin(user_id):
-        await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
-        return
-
     args = event.message.body.text.split(maxsplit=1)
     if len(args) < 2:
         await bot.send_message(chat_id=chat_id, text="Использование: /view <id>")
@@ -522,12 +553,10 @@ async def cmd_view(event):
     except ValueError:
         await bot.send_message(chat_id=chat_id, text="ID должен быть числом.")
         return
-
     app = get_application_by_id(app_id)
     if not app:
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
-
     text = (
         f"📄 Заявка #{app_id}\n\n"
         f"Пользователь: {app[2]}\n"
@@ -554,14 +583,9 @@ async def cmd_view(event):
         await bot.send_message(chat_id=chat_id, text=text)
 
 @dp.message_created(Command(commands=['stats']))
+@admin_required
 async def cmd_stats(event):
     chat_id = get_chat_id(event)
-    user_id = get_user_id(event)
-    if chat_id is None or user_id is None:
-        return
-    if not is_admin(user_id):
-        await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
-        return
     total, pending, approved, rejected = get_stats()
     await bot.send_message(
         chat_id=chat_id,
@@ -575,14 +599,9 @@ async def cmd_stats(event):
     )
 
 @dp.message_created(Command(commands=['approve']))
+@admin_required
 async def cmd_approve(event):
     chat_id = get_chat_id(event)
-    user_id = get_user_id(event)
-    if chat_id is None or user_id is None:
-        return
-    if not is_admin(user_id):
-        await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
-        return
     args = event.message.body.text.split(maxsplit=2)
     if len(args) < 2:
         await bot.send_message(chat_id=chat_id, text="Использование: /approve <id> [комментарий]")
@@ -598,8 +617,7 @@ async def cmd_approve(event):
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
     if app[9] != 'pending':
-        await bot.send_message(chat_id=chat_id,
-            text=f"Заявка уже обработана ({status_ru(app[9])}).")
+        await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'approved', feedback)
     await bot.send_message(chat_id=chat_id, text=f"✅ Заявка #{app_id} одобрена.")
@@ -612,14 +630,9 @@ async def cmd_approve(event):
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
 @dp.message_created(Command(commands=['reject']))
+@admin_required
 async def cmd_reject(event):
     chat_id = get_chat_id(event)
-    user_id = get_user_id(event)
-    if chat_id is None or user_id is None:
-        return
-    if not is_admin(user_id):
-        await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
-        return
     args = event.message.body.text.split(maxsplit=2)
     if len(args) < 2:
         await bot.send_message(chat_id=chat_id, text="Использование: /reject <id> [комментарий]")
@@ -635,8 +648,7 @@ async def cmd_reject(event):
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
     if app[9] != 'pending':
-        await bot.send_message(chat_id=chat_id,
-            text=f"Заявка уже обработана ({status_ru(app[9])}).")
+        await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'rejected', feedback)
     await bot.send_message(chat_id=chat_id, text=f"❌ Заявка #{app_id} отклонена.")
@@ -649,7 +661,7 @@ async def cmd_reject(event):
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
 # =========================================================
-# 13. ОСНОВНОЙ ОБРАБОТЧИК
+# 14. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -662,7 +674,7 @@ async def handle_message(event):
     if user_id in ADMIN_IDS:
         admin_chat_ids[user_id] = chat_id
 
-    # Авто-приветствие при первом контакте
+    # Авто-приветствие
     if user_id_str not in greeted_users:
         text_preview = ""
         if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
@@ -677,7 +689,23 @@ async def handle_message(event):
     step = state['step']
     data = state['data']
 
-    # Шаг файла
+    # --- ВВОД ОБЩЕГО ПАРОЛЯ АДМИНА ---
+    if step == WAITING_ADMIN_PASSWORD:
+        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
+            await bot.send_message(chat_id=chat_id, text="Введите пароль текстом.")
+            return
+        entered = event.message.body.text.strip()
+        if entered == ADMIN_PASSWORD:
+            admin_authenticated.add(user_id)
+            clear_user_state(user_id_str)
+            await bot.send_message(chat_id=chat_id, text="✅ Пароль верный.")
+            await send_admin_menu(chat_id)
+        else:
+            clear_user_state(user_id_str)
+            await bot.send_message(chat_id=chat_id, text="❌ Неверный пароль. Вход отменён.")
+        return
+
+    # --- ШАГ ФАЙЛА ---
     if step == FILE_STEP:
         file_obj = get_file_from_event(event)
         file_path = None
@@ -724,7 +752,7 @@ async def handle_message(event):
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
         return
 
-    # Основные вопросы
+    # --- ОСНОВНЫЕ ВОПРОСЫ ---
     if step < FILE_STEP:
         if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Отправьте текстовое сообщение.")
@@ -748,11 +776,11 @@ async def handle_message(event):
         return
 
 # =========================================================
-# 14. ЗАПУСК
+# 15. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
-    set_bot_commands()   # регистрируем команды для автоподсказки при "/"
+    set_bot_commands()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
