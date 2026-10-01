@@ -3,6 +3,7 @@ import uuid
 import logging
 import sqlite3
 import urllib.request
+import json
 import ssl
 from datetime import datetime, timedelta
 from maxapi import Bot, Dispatcher, F
@@ -23,9 +24,10 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
-    logger.warning("⚠️ Токен взят из кода. На хостинге задайте MAX_BOT_TOKEN!")
+    logger.warning("⚠️ Токен взят из кода.")
 
 ADMIN_IDS = [364551480]
+API_BASE = "https://platform-api2.max.ru"
 DB_PATH = "news.db"
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -35,7 +37,69 @@ admin_chat_ids = {}
 greeted_users = set()
 
 # =========================================================
-# 3. БАЗА ДАННЫХ
+# 3. СЛОВАРЬ СТАТУСОВ
+# =========================================================
+STATUS_RU = {
+    "pending": "⏳ На модерации",
+    "approved": "✅ Одобрено",
+    "rejected": "❌ Отклонено",
+}
+
+def status_ru(status):
+    return STATUS_RU.get(status, status)
+
+# =========================================================
+# 4. УСТАНОВКА СПИСКА КОМАНД БОТА (для автоподсказки при "/")
+# =========================================================
+def set_bot_commands():
+    """
+    Устанавливает список команд в меню бота MAX.
+    После этого при вводе "/" пользователь увидит подсказки.
+    """
+    url = f"{API_BASE}/me/commands"
+    headers = {
+        "Authorization": TOKEN,
+        "Content-Type": "application/json"
+    }
+    commands = [
+        {"name": "start",    "description": "Приветствие и список команд"},
+        {"name": "news",     "description": "Подать новость"},
+        {"name": "cancel",   "description": "Отменить текущую заявку"},
+        {"name": "help",     "description": "Справка по командам"},
+        {"name": "id",       "description": "Показать ваш ID"},
+        # Команды администратора (появятся у всех, но выполняются только админами)
+        {"name": "list",     "description": "Список заявок (админ)"},
+        {"name": "pending",  "description": "Заявки на модерации (админ)"},
+        {"name": "view",     "description": "Просмотр заявки по ID (админ)"},
+        {"name": "approve",  "description": "Одобрить заявку (админ)"},
+        {"name": "reject",   "description": "Отклонить заявку (админ)"},
+        {"name": "stats",    "description": "Статистика (админ)"},
+    ]
+
+    # Пробуем несколько возможных эндпоинтов — разные версии API MAX
+    endpoints = [
+        (f"{API_BASE}/me/commands", "PATCH"),
+        (f"{API_BASE}/me/commands", "PUT"),
+        (f"{API_BASE}/me",          "PATCH"),
+    ]
+    for ep_url, method in endpoints:
+        try:
+            data = json.dumps({"commands": commands}).encode("utf-8")
+            req = urllib.request.Request(ep_url, data=data, headers=headers, method=method)
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                if 200 <= resp.status < 300:
+                    logger.info(f"✅ Команды установлены через {method} {ep_url}")
+                    return True
+        except Exception as e:
+            logger.debug(f"Не удалось установить команды через {method} {ep_url}: {e}")
+
+    logger.warning("⚠️ API MAX не поддерживает установку команд бота — "
+                   "подсказки при '/' не появятся. Всё остальное работает.")
+    return False
+
+# =========================================================
+# 5. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -174,7 +238,7 @@ def count_filtered(status=None, period=None):
     return count
 
 # =========================================================
-# 4. СОСТОЯНИЯ
+# 6. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
 
@@ -191,7 +255,7 @@ def clear_user_state(user_id):
         del user_states[str(user_id)]
 
 # =========================================================
-# 5. ВОПРОСЫ
+# 7. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -204,7 +268,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)
 
 # =========================================================
-# 6. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
 def get_user_id(event):
     if hasattr(event, 'from_user'):
@@ -279,13 +343,13 @@ def save_file(file_obj):
     return name
 
 # =========================================================
-# 7. БОТ
+# 9. БОТ
 # =========================================================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 8. ПРИВЕТСТВИЕ
+# 10. ПРИВЕТСТВИЕ
 # =========================================================
 async def send_greeting(chat_id, user_id=None):
     text = (
@@ -299,21 +363,21 @@ async def send_greeting(chat_id, user_id=None):
     if user_id and user_id in ADMIN_IDS:
         text += (
             "\n🔐 Панель администратора:\n"
-            "🔹 /list [status] [period] [page] — список заявок\n"
-            "   status: pending | approved | rejected | all\n"
-            "   period: today | week | month | all\n"
-            "   page: номер страницы (по умолчанию 1)\n"
-            "🔹 /pending — список ожидающих\n"
+            "🔹 /list [статус] [период] [страница]\n"
+            "   статус: pending | approved | rejected | all\n"
+            "   период: today | week | month | all\n"
+            "🔹 /pending — список заявок на модерации\n"
             "🔹 /view <id> — просмотреть заявку\n"
             "🔹 /stats — статистика\n"
             "🔹 /approve <id> [комментарий] — одобрить\n"
             "🔹 /reject <id> [комментарий] — отклонить"
         )
+    text += "\n\n💡 Совет: введите «/», чтобы увидеть список команд."
     await bot.send_message(chat_id=chat_id, text=text)
     greeted_users.add(str(user_id))
 
 # =========================================================
-# 9. КОМАНДЫ
+# 11. КОМАНДЫ
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
@@ -341,13 +405,14 @@ async def cmd_help(event):
     if is_admin(user_id):
         text += (
             "\n🔹 Для администраторов:\n"
-            "/list [status] [period] [page] — список заявок\n"
-            "/pending — только ожидающие\n"
+            "/list [статус] [период] [страница] — список заявок\n"
+            "/pending — только заявки на модерации\n"
             "/view <id> — просмотр заявки\n"
             "/stats — статистика\n"
             "/approve <id> [комментарий] — одобрить\n"
             "/reject <id> [комментарий] — отклонить\n"
         )
+    text += "\n💡 Введите «/», чтобы увидеть список команд."
     await bot.send_message(chat_id=chat_id, text=text)
 
 @dp.message_created(Command(commands=['id']))
@@ -382,7 +447,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 10. АДМИН-КОМАНДЫ
+# 12. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['list']))
 async def cmd_list(event):
@@ -427,7 +492,7 @@ async def cmd_list(event):
         msg += (
             f"ID: {r[0]}\n"
             f"Имя: {r[2]}\n"
-            f"Статус: {r[9]}\n"
+            f"Статус: {status_ru(r[9])}\n"
             f"Дата: {r[11]}\n\n"
         )
     msg += "Просмотр: /view <id>\nРешение: /approve <id> или /reject <id>"
@@ -471,7 +536,7 @@ async def cmd_view(event):
         f"Как пришёл: {app[5]}\n"
         f"Место и время: {app[6]}\n"
         f"Комментарий: {app[7] or '—'}\n"
-        f"Статус: {app[9]}\n"
+        f"Статус: {status_ru(app[9])}\n"
         f"Комментарий админа: {app[10] or '—'}\n"
         f"Создана: {app[11]}"
     )
@@ -498,8 +563,16 @@ async def cmd_stats(event):
         await bot.send_message(chat_id=chat_id, text="⛔ Только для администраторов.")
         return
     total, pending, approved, rejected = get_stats()
-    await bot.send_message(chat_id=chat_id,
-        text=f"📊 Всего: {total}\nОжидают: {pending}\nОдобрено: {approved}\nОтклонено: {rejected}")
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"📊 Статистика заявок:\n"
+            f"Всего: {total}\n"
+            f"{status_ru('pending')}: {pending}\n"
+            f"{status_ru('approved')}: {approved}\n"
+            f"{status_ru('rejected')}: {rejected}"
+        )
+    )
 
 @dp.message_created(Command(commands=['approve']))
 async def cmd_approve(event):
@@ -525,12 +598,16 @@ async def cmd_approve(event):
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
     if app[9] != 'pending':
-        await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана ({app[9]}).")
+        await bot.send_message(chat_id=chat_id,
+            text=f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'approved', feedback)
     await bot.send_message(chat_id=chat_id, text=f"✅ Заявка #{app_id} одобрена.")
     try:
-        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback or 'нет'}")
+        await bot.send_message(
+            chat_id=int(app[1]),
+            text=f"Ваша заявка #{app_id} одобрена. Комментарий: {feedback or 'нет'}"
+        )
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
@@ -558,17 +635,21 @@ async def cmd_reject(event):
         await bot.send_message(chat_id=chat_id, text=f"Заявка #{app_id} не найдена.")
         return
     if app[9] != 'pending':
-        await bot.send_message(chat_id=chat_id, text=f"Заявка уже обработана ({app[9]}).")
+        await bot.send_message(chat_id=chat_id,
+            text=f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'rejected', feedback)
     await bot.send_message(chat_id=chat_id, text=f"❌ Заявка #{app_id} отклонена.")
     try:
-        await bot.send_message(chat_id=int(app[1]), text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback or 'не указана'}")
+        await bot.send_message(
+            chat_id=int(app[1]),
+            text=f"Ваша заявка #{app_id} отклонена. Причина: {feedback or 'не указана'}"
+        )
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
 # =========================================================
-# 11. ОСНОВНОЙ ОБРАБОТЧИК
+# 13. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -629,7 +710,8 @@ async def handle_message(event):
 
         admin_note = (
             f"📢 Новая заявка #{app_id}\n"
-            f"От: {data.get('full_name', '—')}\n\n"
+            f"От: {data.get('full_name', '—')}\n"
+            f"Статус: {status_ru('pending')}\n\n"
             f"Просмотр: /view {app_id}\n"
             f"Решение: /approve {app_id} или /reject {app_id}"
         )
@@ -666,10 +748,11 @@ async def handle_message(event):
         return
 
 # =========================================================
-# 12. ЗАПУСК
+# 14. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
+    set_bot_commands()   # регистрируем команды для автоподсказки при "/"
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
