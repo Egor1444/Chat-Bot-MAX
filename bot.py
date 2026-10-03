@@ -6,6 +6,7 @@ import smtplib
 import urllib.request
 import json
 import ssl
+from functools import wraps
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -31,14 +32,20 @@ if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода.")
 
+# Полный админ — для /admin и доступа ко всему
 ADMIN_IDS = [364551480]
+# Модераторы — могут смотреть/одобрять/отклонять без пароля
+MODERATOR_IDS = [
+    # 111222333,
+    # 444555666,
+]
 ADMIN_PASSWORD = "admin123"
 
 # --- Email (Mail.ru) ---
 SMTP_SERVER = "smtp.mail.ru"
 SMTP_PORT = 465
 SMTP_USER = "rockefelle@mail.ru"
-SMTP_PASSWORD = "H0cCiGs91yPk2EuOMIls"   # пароль для внешнего приложения
+SMTP_PASSWORD = "H0cCiGs91yPk2EuOMIls"
 ADMIN_EMAIL = "rockefelle@mail.ru"
 
 API_BASE = "https://platform-api2.max.ru"
@@ -103,17 +110,17 @@ def set_bot_commands():
         {"name": "start",     "description": "Приветствие и список команд"},
         {"name": "news",      "description": "Подать новость"},
         {"name": "mystatus",  "description": "Проверить статус своих заявок"},
-        {"name": "cancel",    "description": "Отменить текущую заявку"},
+        {"name": "cancel",    "description": "Отменить черновик или отозвать заявку"},
         {"name": "help",      "description": "Справка по командам"},
         {"name": "id",        "description": "Показать ваш ID"},
         {"name": "admin",     "description": "Вход в админ-панель"},
         {"name": "logout",    "description": "Выйти из админ-панели"},
-        {"name": "list",      "description": "Список заявок (админ)"},
-        {"name": "pending",   "description": "Заявки на модерации (админ)"},
-        {"name": "view",      "description": "Просмотр заявки по ID (админ)"},
-        {"name": "approve",   "description": "Одобрить заявку (админ)"},
-        {"name": "reject",    "description": "Отклонить заявку (админ)"},
-        {"name": "stats",     "description": "Статистика (админ)"},
+        {"name": "list",      "description": "Список заявок (модерация)"},
+        {"name": "pending",   "description": "Заявки на модерации"},
+        {"name": "view",      "description": "Просмотр заявки по ID"},
+        {"name": "approve",   "description": "Одобрить заявку"},
+        {"name": "reject",    "description": "Отклонить заявку"},
+        {"name": "stats",     "description": "Статистика"},
     ]
     endpoints = [
         (f"{API_BASE}/me/commands", "PATCH"),
@@ -162,6 +169,7 @@ def init_db():
 init_db()
 
 def save_application(user_id, data, file_path=None):
+    logger.info(f"💾 save_application: user_id={user_id!r} type={type(user_id).__name__}")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -192,6 +200,7 @@ def get_application_by_id(app_id):
     return row
 
 def get_applications_by_user(user_id):
+    logger.info(f"🔍 get_applications_by_user: user_id={user_id!r} type={type(user_id).__name__}")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT * FROM news WHERE user_id = ? ORDER BY created_at DESC', (str(user_id),))
@@ -289,8 +298,7 @@ def set_user_state(user_id, step, data=None):
     user_states[str(user_id)] = {'step': step, 'data': data}
 
 def clear_user_state(user_id):
-    if user_id in user_states:
-        del user_states[str(user_id)]
+    user_states.pop(str(user_id), None)
 
 # =========================================================
 # 8. ВОПРОСЫ
@@ -308,17 +316,29 @@ FILE_STEP = len(QUESTIONS)
 # =========================================================
 # 9. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
+def _normalize_uid(uid):
+    if uid is None:
+        return None
+    return str(uid).strip()
+
 def get_user_id(event):
+    uid = None
     if hasattr(event, 'from_user'):
         if hasattr(event.from_user, 'user_id'):
-            return event.from_user.user_id
-        if hasattr(event.from_user, 'id'):
-            return event.from_user.id
-    if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
-        return event.sender.user_id
-    if hasattr(event, 'user') and hasattr(event.user, 'id'):
-        return event.user.id
-    return None
+            uid = event.from_user.user_id
+        elif hasattr(event.from_user, 'id'):
+            uid = event.from_user.id
+    if uid is None and hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
+        uid = event.sender.user_id
+    if uid is None and hasattr(event, 'user') and hasattr(event.user, 'id'):
+        uid = event.user.id
+    if uid is None and hasattr(event, 'message') and hasattr(event.message, 'sender'):
+        s = event.message.sender
+        if hasattr(s, 'user_id'):
+            uid = s.user_id
+        elif hasattr(s, 'id'):
+            uid = s.id
+    return _normalize_uid(uid)
 
 def get_chat_id(event):
     if hasattr(event, 'recipient') and hasattr(event.recipient, 'chat_id'):
@@ -332,7 +352,13 @@ def get_chat_id(event):
     return None
 
 def is_admin(user_id):
-    return user_id in ADMIN_IDS
+    return str(user_id) in {str(x) for x in ADMIN_IDS}
+
+def is_moderator(user_id):
+    return str(user_id) in {str(x) for x in MODERATOR_IDS}
+
+def can_moderate(user_id):
+    return is_admin(user_id) or is_moderator(user_id)
 
 def get_file_from_event(event):
     msg = event.message
@@ -361,7 +387,8 @@ def save_file(file_obj):
     if hasattr(file_obj, 'download'):
         try:
             file_obj.download(file_path)
-            return file_path
+            if os.path.exists(file_path):
+                return file_path
         except Exception as e:
             logger.error(f"Ошибка download: {e}")
 
@@ -376,9 +403,9 @@ def save_file(file_obj):
         except Exception as e:
             logger.error(f"Ошибка скачивания по URL: {e}")
 
-    if hasattr(file_obj, 'file_id'):
-        return str(file_obj.file_id)
-    return name
+    # если ничего не скачалось — не подменяем путь мусором, отдаём None
+    logger.warning(f"Файл не сохранён, поле file_path будет пустым (name={name})")
+    return None
 
 # =========================================================
 # 10. БОТ
@@ -395,11 +422,11 @@ async def send_greeting(chat_id, user_id=None):
         "📌 Доступные команды:\n\n"
         "🔹 /news — подать новость (пошаговый опрос)\n"
         "🔹 /mystatus — проверить статус своих заявок\n"
-        "🔹 /cancel — отменить текущую заявку\n"
+        "🔹 /cancel — отменить черновик или отозвать последнюю заявку\n"
         "🔹 /help — справка\n"
         "🔹 /id — показать ваш ID\n"
     )
-    if user_id and user_id in ADMIN_IDS:
+    if user_id and is_admin(user_id):
         text += (
             "\n🔐 Для администраторов:\n"
             "🔹 /admin — войти в админ-панель (по паролю)\n"
@@ -435,7 +462,7 @@ async def cmd_start(event):
     user_id = get_user_id(event)
     if chat_id is None or user_id is None:
         return
-    clear_user_state(str(user_id))
+    clear_user_state(user_id)
     await send_greeting(chat_id, user_id)
 
 @dp.message_created(Command(commands=['help']))
@@ -450,7 +477,7 @@ async def cmd_help(event):
         "/start — приветствие\n"
         "/news — подать новость\n"
         "/mystatus — проверить статус своих заявок\n"
-        "/cancel — отменить заявку\n"
+        "/cancel — отменить черновик или отозвать последнюю заявку\n"
         "/id — ваш ID\n"
     )
     if is_admin(user_id):
@@ -464,9 +491,17 @@ async def cmd_id(event):
     user_id = get_user_id(event)
     if chat_id is None or user_id is None:
         return
-    role = "администратор ✅" if user_id in ADMIN_IDS else "пользователь"
+    if is_admin(user_id):
+        role = "администратор ✅"
+    elif is_moderator(user_id):
+        role = "модератор ✅"
+    else:
+        role = "пользователь"
     auth = "авторизован" if user_id in admin_authenticated else "не авторизован"
-    await bot.send_message(chat_id=chat_id, text=f"Ваш ID: {user_id}\nРоль: {role}\nСтатус админа: {auth}")
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"Ваш ID: {user_id}\nРоль: {role}\nСтатус админа: {auth}"
+    )
 
 @dp.message_created(Command(commands=['cancel']))
 async def cmd_cancel(event):
@@ -474,11 +509,29 @@ async def cmd_cancel(event):
     user_id = get_user_id(event)
     if chat_id is None or user_id is None:
         return
-    if get_user_state(str(user_id)) is not None:
-        clear_user_state(str(user_id))
-        await bot.send_message(chat_id=chat_id, text="✅ Заявка отменена.")
-    else:
-        await bot.send_message(chat_id=chat_id, text="Нет активной заявки.")
+
+    # 1) активный черновик — отменяем его
+    if get_user_state(user_id) is not None:
+        clear_user_state(user_id)
+        await bot.send_message(chat_id=chat_id, text="✅ Черновик заявки отменён.")
+        return
+
+    # 2) иначе пробуем отозвать последнюю заявку на модерации
+    rows = get_applications_by_user(user_id)
+    pending = [r for r in rows if r[9] == 'pending']
+    if not pending:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="Нет активной заявки для отмены."
+        )
+        return
+
+    last_id = pending[0][0]
+    update_status(last_id, 'rejected', 'Отозвана автором')
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"✅ Заявка #{last_id} отозвана.\nСтатус: {status_ru('rejected')}"
+    )
 
 @dp.message_created(Command(commands=['news']))
 async def cmd_news(event):
@@ -486,8 +539,8 @@ async def cmd_news(event):
     user_id = get_user_id(event)
     if chat_id is None or user_id is None:
         return
-    clear_user_state(str(user_id))
-    set_user_state(str(user_id), 0)
+    clear_user_state(user_id)
+    set_user_state(user_id, 0)
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
@@ -500,31 +553,41 @@ async def cmd_mystatus(event):
     if chat_id is None or user_id is None:
         return
 
-    if get_user_state(str(user_id)) is not None:
-        await bot.send_message(
-            chat_id=chat_id,
-            text="⚠️ Сначала завершите текущую заявку или отмените её командой /cancel."
-        )
-        return
-
+    state = get_user_state(user_id)
     rows = get_applications_by_user(user_id)
-    if not rows:
+
+    parts = []
+
+    if state is not None:
+        step = state['step']
+        total = len(QUESTIONS) + 1  # вопросы + шаг файла
+        parts.append(
+            f"📝 У вас есть незавершённый черновик "
+            f"(шаг {min(step + 1, total)} из {total}).\n"
+            f"Продолжите отвечать или отмените командой /cancel."
+        )
+
+    if rows:
+        msg = f"📄 Ваши заявки ({len(rows)}):\n\n"
+        for r in rows:
+            text_field = r[3] or ''
+            short = text_field[:60] + ('...' if len(text_field) > 60 else '')
+            msg += (
+                f"ID: {r[0]}\n"
+                f"Текст: {short}\n"
+                f"Статус: {status_ru(r[9])}\n"
+            )
+            if r[10]:
+                msg += f"Комментарий админа: {r[10]}\n"
+            msg += f"Отправлено: {r[11]}\n\n"
+        msg += "📌 Отозвать последнюю заявку: /cancel"
+        parts.append(msg)
+
+    if not parts:
         await bot.send_message(chat_id=chat_id, text="📭 У вас пока нет заявок.")
         return
 
-    msg = f"📄 Ваши заявки ({len(rows)}):\n\n"
-    for r in rows:
-        short = r[3][:60] + ('...' if len(r[3]) > 60 else '')
-        msg += (
-            f"ID: {r[0]}\n"
-            f"Текст: {short}\n"
-            f"Статус: {status_ru(r[9])}\n"
-        )
-        if r[10]:
-            msg += f"Комментарий админа: {r[10]}\n"
-        msg += f"Отправлено: {r[11]}\n\n"
-    msg += "📌 Если хотите узнать детали по конкретной заявке — обратитесь к администратору."
-    await bot.send_message(chat_id=chat_id, text=msg)
+    await bot.send_message(chat_id=chat_id, text="\n\n".join(parts))
 
 # =========================================================
 # 14. ВХОД / ВЫХОД
@@ -542,7 +605,7 @@ async def cmd_admin(event):
         await bot.send_message(chat_id=chat_id, text="🔓 Вы уже авторизованы.")
         await send_admin_menu(chat_id)
         return
-    set_user_state(str(user_id), WAITING_ADMIN_PASSWORD)
+    set_user_state(user_id, WAITING_ADMIN_PASSWORD)
     await bot.send_message(chat_id=chat_id, text="🔐 Введите пароль администратора:")
 
 @dp.message_created(Command(commands=['logout']))
@@ -558,15 +621,17 @@ async def cmd_logout(event):
         await bot.send_message(chat_id=chat_id, text="Вы не авторизованы.")
 
 def admin_required(func):
+    @wraps(func)
     async def wrapper(event):
         chat_id = get_chat_id(event)
         user_id = get_user_id(event)
         if chat_id is None or user_id is None:
             return
-        if not is_admin(user_id):
+        if not can_moderate(user_id):
             await bot.send_message(chat_id=chat_id, text="⛔ Доступ запрещён.")
             return
-        if user_id not in admin_authenticated:
+        # админ — только после /admin + пароль; модератор работает сразу
+        if is_admin(user_id) and user_id not in admin_authenticated:
             await bot.send_message(
                 chat_id=chat_id,
                 text="🔒 Требуется авторизация. Введите /admin и укажите пароль."
@@ -620,8 +685,26 @@ async def cmd_list(event):
 @dp.message_created(Command(commands=['pending']))
 @admin_required
 async def cmd_pending(event):
-    event.message.body.text = "/list pending"
-    await cmd_list(event)
+    # вместо подмены текста — формируем список напрямую
+    chat_id = get_chat_id(event)
+    status = 'pending'
+    total = count_filtered(status=status, period=None)
+    if total == 0:
+        await bot.send_message(chat_id=chat_id, text="Заявок на модерации нет.")
+        return
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    rows = filter_applications(status=status, period=None, sort_new_first=True,
+                               limit=PAGE_SIZE, offset=0)
+    msg = f"⏳ Заявки на модерации (стр. 1/{total_pages}):\n\n"
+    for r in rows:
+        msg += (
+            f"ID: {r[0]}\n"
+            f"Имя: {r[2]}\n"
+            f"Статус: {status_ru(r[9])}\n"
+            f"Дата: {r[11]}\n\n"
+        )
+    msg += "Просмотр: /view <id>\nРешение: /approve <id> или /reject <id>"
+    await bot.send_message(chat_id=chat_id, text=msg)
 
 @dp.message_created(Command(commands=['view']))
 @admin_required
@@ -754,15 +837,20 @@ async def handle_message(event):
         return
     user_id_str = str(user_id)
 
-    if user_id in ADMIN_IDS:
+    # Команды НЕ обрабатываем как ответы на вопросы.
+    # Это критично для /cancel во время опроса.
+    raw_text = ""
+    if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
+        raw_text = (event.message.body.text or "").strip()
+    if raw_text.startswith('/'):
+        return
+
+    if is_admin(user_id):
         admin_chat_ids[user_id] = chat_id
 
     # Авто-приветствие
     if user_id_str not in greeted_users:
-        text_preview = ""
-        if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
-            text_preview = (event.message.body.text or "").strip()
-        if not text_preview.startswith("/start"):
+        if not raw_text.startswith("/start"):
             await send_greeting(chat_id, user_id)
 
     state = get_user_state(user_id_str)
@@ -774,11 +862,10 @@ async def handle_message(event):
 
     # --- ВВОД ПАРОЛЯ АДМИНА ---
     if step == WAITING_ADMIN_PASSWORD:
-        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
+        if not raw_text:
             await bot.send_message(chat_id=chat_id, text="Введите пароль текстом.")
             return
-        entered = event.message.body.text.strip()
-        if entered == ADMIN_PASSWORD:
+        if raw_text == ADMIN_PASSWORD:
             admin_authenticated.add(user_id)
             clear_user_state(user_id_str)
             await bot.send_message(chat_id=chat_id, text="✅ Пароль верный.")
@@ -802,17 +889,21 @@ async def handle_message(event):
                 await bot.send_message(chat_id=chat_id, text="Не удалось сохранить файл.")
                 return
         else:
-            if hasattr(event.message, 'body') and hasattr(event.message.body, 'text'):
-                text = event.message.body.text.strip().lower()
+            if raw_text:
+                text = raw_text.lower()
                 if text in ("пропустить", "—"):
                     data['file_path'] = None
                 else:
-                    await bot.send_message(chat_id=chat_id,
-                        text="Прикрепите фото/документ или напишите «Пропустить».")
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="Прикрепите фото/документ или напишите «Пропустить»."
+                    )
                     return
             else:
-                await bot.send_message(chat_id=chat_id,
-                    text="Прикрепите фото/документ или напишите «Пропустить».")
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="Прикрепите фото/документ или напишите «Пропустить»."
+                )
                 return
 
         app_id = save_application(user_id_str, data, data.get('file_path'))
@@ -857,13 +948,10 @@ async def handle_message(event):
 
     # --- ОСНОВНЫЕ ВОПРОСЫ ---
     if step < FILE_STEP:
-        if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
+        if not raw_text:
             await bot.send_message(chat_id=chat_id, text="Отправьте текстовое сообщение.")
             return
-        text = event.message.body.text.strip()
-        if not text:
-            await bot.send_message(chat_id=chat_id, text="Отправьте текстовое сообщение.")
-            return
+        text = raw_text
         if step == 5 and text == "—":
             text = ""
         field = QUESTIONS[step][0]
@@ -874,8 +962,10 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id, text=QUESTIONS[next_step][1])
         else:
             set_user_state(user_id_str, FILE_STEP, data)
-            await bot.send_message(chat_id=chat_id,
-                text="Прикрепите фото/документ, подтверждающее событие. Или напишите «Пропустить».")
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Прикрепите фото/документ, подтверждающее событие. Или напишите «Пропустить»."
+            )
         return
 
 # =========================================================
