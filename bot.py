@@ -38,7 +38,7 @@ ADMIN_PASSWORD = "admin123"
 SMTP_SERVER = "smtp.mail.ru"
 SMTP_PORT = 465
 SMTP_USER = "rockefelle@mail.ru"
-SMTP_PASSWORD = "Ljkbyf_1980"
+SMTP_PASSWORD = "H0cCiGs91yPk2EuOMIls"   # пароль для внешнего приложения
 ADMIN_EMAIL = "rockefelle@mail.ru"
 
 API_BASE = "https://platform-api2.max.ru"
@@ -64,16 +64,14 @@ def status_ru(status):
     return STATUS_RU.get(status, status)
 
 # =========================================================
-# 4. ОТПРАВКА ПОЧТЫ (Mail.ru SMTP)
+# 4. ОТПРАВКА ПОЧТЫ (Mail.ru SMTP SSL, порт 465)
 # =========================================================
 def send_email_with_attachment(subject: str, body: str, file_path: str = None) -> bool:
-    """Отправляет письмо с вложением (если есть) на ADMIN_EMAIL."""
     try:
         msg = MIMEMultipart()
         msg['From'] = SMTP_USER
         msg['To'] = ADMIN_EMAIL
         msg['Subject'] = subject
-
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
         if file_path and os.path.exists(file_path):
@@ -82,17 +80,13 @@ def send_email_with_attachment(subject: str, body: str, file_path: str = None) -
                 part = MIMEBase('application', 'octet-stream')
                 part.set_payload(f.read())
             encoders.encode_base64(part)
-            part.add_header(
-                'Content-Disposition',
-                f'attachment; filename="{filename}"'
-            )
+            part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
             msg.attach(part)
 
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context, timeout=30) as server:
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
-
         logger.info(f"📧 Письмо отправлено на {ADMIN_EMAIL}")
         return True
     except Exception as e:
@@ -106,19 +100,20 @@ def set_bot_commands():
     url = f"{API_BASE}/me/commands"
     headers = {"Authorization": TOKEN, "Content-Type": "application/json"}
     commands = [
-        {"name": "start",   "description": "Приветствие и список команд"},
-        {"name": "news",    "description": "Подать новость"},
-        {"name": "cancel",  "description": "Отменить текущую заявку"},
-        {"name": "help",    "description": "Справка по командам"},
-        {"name": "id",      "description": "Показать ваш ID"},
-        {"name": "admin",   "description": "Вход в админ-панель"},
-        {"name": "logout",  "description": "Выйти из админ-панели"},
-        {"name": "list",    "description": "Список заявок (админ)"},
-        {"name": "pending", "description": "Заявки на модерации (админ)"},
-        {"name": "view",    "description": "Просмотр заявки по ID (админ)"},
-        {"name": "approve", "description": "Одобрить заявку (админ)"},
-        {"name": "reject",  "description": "Отклонить заявку (админ)"},
-        {"name": "stats",   "description": "Статистика (админ)"},
+        {"name": "start",     "description": "Приветствие и список команд"},
+        {"name": "news",      "description": "Подать новость"},
+        {"name": "mystatus",  "description": "Проверить статус своих заявок"},
+        {"name": "cancel",    "description": "Отменить текущую заявку"},
+        {"name": "help",      "description": "Справка по командам"},
+        {"name": "id",        "description": "Показать ваш ID"},
+        {"name": "admin",     "description": "Вход в админ-панель"},
+        {"name": "logout",    "description": "Выйти из админ-панели"},
+        {"name": "list",      "description": "Список заявок (админ)"},
+        {"name": "pending",   "description": "Заявки на модерации (админ)"},
+        {"name": "view",      "description": "Просмотр заявки по ID (админ)"},
+        {"name": "approve",   "description": "Одобрить заявку (админ)"},
+        {"name": "reject",    "description": "Отклонить заявку (админ)"},
+        {"name": "stats",     "description": "Статистика (админ)"},
     ]
     endpoints = [
         (f"{API_BASE}/me/commands", "PATCH"),
@@ -195,6 +190,14 @@ def get_application_by_id(app_id):
     row = c.fetchone()
     conn.close()
     return row
+
+def get_applications_by_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT * FROM news WHERE user_id = ? ORDER BY created_at DESC', (str(user_id),))
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 def update_status(app_id, status, feedback=''):
     conn = sqlite3.connect(DB_PATH)
@@ -331,9 +334,6 @@ def get_chat_id(event):
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-def is_admin_authorized(user_id):
-    return user_id in ADMIN_IDS and user_id in admin_authenticated
-
 def get_file_from_event(event):
     msg = event.message
     for attr in ['photo', 'document', 'file', 'attachment', 'media']:
@@ -394,6 +394,7 @@ async def send_greeting(chat_id, user_id=None):
         "👋 Добро пожаловать в бот для подачи новостей!\n\n"
         "📌 Доступные команды:\n\n"
         "🔹 /news — подать новость (пошаговый опрос)\n"
+        "🔹 /mystatus — проверить статус своих заявок\n"
         "🔹 /cancel — отменить текущую заявку\n"
         "🔹 /help — справка\n"
         "🔹 /id — показать ваш ID\n"
@@ -448,6 +449,7 @@ async def cmd_help(event):
         "🔹 Для всех:\n"
         "/start — приветствие\n"
         "/news — подать новость\n"
+        "/mystatus — проверить статус своих заявок\n"
         "/cancel — отменить заявку\n"
         "/id — ваш ID\n"
     )
@@ -489,7 +491,43 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 13. ВХОД / ВЫХОД
+# 13. СТАТУС ЗАЯВОК ДЛЯ ПОЛЬЗОВАТЕЛЯ
+# =========================================================
+@dp.message_created(Command(commands=['mystatus']))
+async def cmd_mystatus(event):
+    chat_id = get_chat_id(event)
+    user_id = get_user_id(event)
+    if chat_id is None or user_id is None:
+        return
+
+    if get_user_state(str(user_id)) is not None:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Сначала завершите текущую заявку или отмените её командой /cancel."
+        )
+        return
+
+    rows = get_applications_by_user(user_id)
+    if not rows:
+        await bot.send_message(chat_id=chat_id, text="📭 У вас пока нет заявок.")
+        return
+
+    msg = f"📄 Ваши заявки ({len(rows)}):\n\n"
+    for r in rows:
+        short = r[3][:60] + ('...' if len(r[3]) > 60 else '')
+        msg += (
+            f"ID: {r[0]}\n"
+            f"Текст: {short}\n"
+            f"Статус: {status_ru(r[9])}\n"
+        )
+        if r[10]:
+            msg += f"Комментарий админа: {r[10]}\n"
+        msg += f"Отправлено: {r[11]}\n\n"
+    msg += "📌 Если хотите узнать детали по конкретной заявке — обратитесь к администратору."
+    await bot.send_message(chat_id=chat_id, text=msg)
+
+# =========================================================
+# 14. ВХОД / ВЫХОД
 # =========================================================
 @dp.message_created(Command(commands=['admin']))
 async def cmd_admin(event):
@@ -538,7 +576,7 @@ def admin_required(func):
     return wrapper
 
 # =========================================================
-# 14. АДМИН-КОМАНДЫ
+# 15. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['list']))
 @admin_required
@@ -706,7 +744,7 @@ async def cmd_reject(event):
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
 # =========================================================
-# 15. ОСНОВНОЙ ОБРАБОТЧИК
+# 16. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -750,7 +788,7 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id, text="❌ Неверный пароль. Вход отменён.")
         return
 
-    # --- ШАГ ФАЙЛА (сохранение в БД + отправка на почту) ---
+    # --- ШАГ ФАЙЛА ---
     if step == FILE_STEP:
         file_obj = get_file_from_event(event)
         file_path = None
@@ -777,12 +815,11 @@ async def handle_message(event):
                     text="Прикрепите фото/документ или напишите «Пропустить».")
                 return
 
-        # 1) Сохраняем в БД для админ-панели MAX
         app_id = save_application(user_id_str, data, data.get('file_path'))
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка отправлена на модерацию!")
 
-        # 2) Отправляем письмо на почту
+        # --- Отправка письма ---
         email_body = (
             f"Новая заявка #{app_id}\n\n"
             f"ФИО / роль: {data.get('full_name', '—')}\n"
@@ -801,7 +838,6 @@ async def handle_message(event):
             data.get('file_path')
         )
 
-        # 3) Уведомляем админов в MAX
         admin_note = (
             f"📢 Новая заявка #{app_id}\n"
             f"От: {data.get('full_name', '—')}\n"
@@ -843,7 +879,7 @@ async def handle_message(event):
         return
 
 # =========================================================
-# 16. ЗАПУСК
+# 17. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
