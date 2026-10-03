@@ -2,9 +2,14 @@ import os
 import uuid
 import logging
 import sqlite3
+import smtplib
 import urllib.request
 import json
 import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime, timedelta
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart, Command
@@ -26,11 +31,15 @@ if not TOKEN:
     TOKEN = "f9LHodD0cOJO_JQ3Fnv3sJhDo51UNGWi8RuOQuHkTuCgmlRHNseHKzURvnyoIcCt1caQpNsYzMZJY3aQLoG9"
     logger.warning("⚠️ Токен взят из кода.")
 
-# Список ID всех администраторов
-ADMIN_IDS = [364551480]   # добавляйте сюда ID других админов
+ADMIN_IDS = [364551480]
+ADMIN_PASSWORD = "admin123"
 
-# Один общий пароль для всех админов
-ADMIN_PASSWORD = "admin123"   # ← поменяйте на свой
+# --- Email (Mail.ru) ---
+SMTP_SERVER = "smtp.mail.ru"
+SMTP_PORT = 465
+SMTP_USER = "rockefelle@mail.ru"
+SMTP_PASSWORD = "Ljkbyf_1980"
+ADMIN_EMAIL = "rockefelle@mail.ru"
 
 API_BASE = "https://platform-api2.max.ru"
 DB_PATH = "news.db"
@@ -40,7 +49,7 @@ PAGE_SIZE = 5
 
 admin_chat_ids = {}
 greeted_users = set()
-admin_authenticated = set()   # сюда попадают user_id, успешно введшие пароль
+admin_authenticated = set()
 
 # =========================================================
 # 3. СЛОВАРЬ СТАТУСОВ
@@ -55,7 +64,43 @@ def status_ru(status):
     return STATUS_RU.get(status, status)
 
 # =========================================================
-# 4. УСТАНОВКА СПИСКА КОМАНД
+# 4. ОТПРАВКА ПОЧТЫ (Mail.ru SMTP)
+# =========================================================
+def send_email_with_attachment(subject: str, body: str, file_path: str = None) -> bool:
+    """Отправляет письмо с вложением (если есть) на ADMIN_EMAIL."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USER
+        msg['To'] = ADMIN_EMAIL
+        msg['Subject'] = subject
+
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+        if file_path and os.path.exists(file_path):
+            filename = os.path.basename(file_path)
+            with open(file_path, 'rb') as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                'Content-Disposition',
+                f'attachment; filename="{filename}"'
+            )
+            msg.attach(part)
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        logger.info(f"📧 Письмо отправлено на {ADMIN_EMAIL}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки письма: {e}")
+        return False
+
+# =========================================================
+# 5. УСТАНОВКА СПИСКА КОМАНД
 # =========================================================
 def set_bot_commands():
     url = f"{API_BASE}/me/commands"
@@ -95,7 +140,7 @@ def set_bot_commands():
     return False
 
 # =========================================================
-# 5. БАЗА ДАННЫХ
+# 6. БАЗА ДАННЫХ
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -226,7 +271,7 @@ def count_filtered(status=None, period=None):
     return count
 
 # =========================================================
-# 6. СОСТОЯНИЯ
+# 7. СОСТОЯНИЯ
 # =========================================================
 user_states = {}
 
@@ -245,7 +290,7 @@ def clear_user_state(user_id):
         del user_states[str(user_id)]
 
 # =========================================================
-# 7. ВОПРОСЫ
+# 8. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
     ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
@@ -258,7 +303,7 @@ QUESTIONS = [
 FILE_STEP = len(QUESTIONS)
 
 # =========================================================
-# 8. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 9. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
 def get_user_id(event):
     if hasattr(event, 'from_user'):
@@ -336,13 +381,13 @@ def save_file(file_obj):
     return name
 
 # =========================================================
-# 9. БОТ
+# 10. БОТ
 # =========================================================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # =========================================================
-# 10. ПРИВЕТСТВИЕ
+# 11. ПРИВЕТСТВИЕ
 # =========================================================
 async def send_greeting(chat_id, user_id=None):
     text = (
@@ -375,12 +420,13 @@ async def send_admin_menu(chat_id):
         "🔹 /stats — статистика\n"
         "🔹 /approve <id> [комментарий] — одобрить\n"
         "🔹 /reject <id> [комментарий] — отклонить\n"
-        "🔹 /logout — выйти из админ-панели"
+        "🔹 /logout — выйти из админ-панели\n\n"
+        "📩 Все заявки также приходят на почту администратора."
     )
     await bot.send_message(chat_id=chat_id, text=text)
 
 # =========================================================
-# 11. ОБЩИЕ КОМАНДЫ
+# 12. ОБЩИЕ КОМАНДЫ
 # =========================================================
 @dp.message_created(CommandStart())
 async def cmd_start(event):
@@ -443,7 +489,7 @@ async def cmd_news(event):
     await bot.send_message(chat_id=chat_id, text=QUESTIONS[0][1])
 
 # =========================================================
-# 12. ВХОД / ВЫХОД ИЗ АДМИНКИ
+# 13. ВХОД / ВЫХОД
 # =========================================================
 @dp.message_created(Command(commands=['admin']))
 async def cmd_admin(event):
@@ -474,7 +520,6 @@ async def cmd_logout(event):
         await bot.send_message(chat_id=chat_id, text="Вы не авторизованы.")
 
 def admin_required(func):
-    """Декоратор для админ-команд, требующих авторизации."""
     async def wrapper(event):
         chat_id = get_chat_id(event)
         user_id = get_user_id(event)
@@ -493,7 +538,7 @@ def admin_required(func):
     return wrapper
 
 # =========================================================
-# 13. АДМИН-КОМАНДЫ
+# 14. АДМИН-КОМАНДЫ
 # =========================================================
 @dp.message_created(Command(commands=['list']))
 @admin_required
@@ -661,7 +706,7 @@ async def cmd_reject(event):
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
 # =========================================================
-# 14. ОСНОВНОЙ ОБРАБОТЧИК
+# 15. ОСНОВНОЙ ОБРАБОТЧИК
 # =========================================================
 @dp.message_created()
 async def handle_message(event):
@@ -689,7 +734,7 @@ async def handle_message(event):
     step = state['step']
     data = state['data']
 
-    # --- ВВОД ОБЩЕГО ПАРОЛЯ АДМИНА ---
+    # --- ВВОД ПАРОЛЯ АДМИНА ---
     if step == WAITING_ADMIN_PASSWORD:
         if not hasattr(event.message, 'body') or not hasattr(event.message.body, 'text'):
             await bot.send_message(chat_id=chat_id, text="Введите пароль текстом.")
@@ -705,7 +750,7 @@ async def handle_message(event):
             await bot.send_message(chat_id=chat_id, text="❌ Неверный пароль. Вход отменён.")
         return
 
-    # --- ШАГ ФАЙЛА ---
+    # --- ШАГ ФАЙЛА (сохранение в БД + отправка на почту) ---
     if step == FILE_STEP:
         file_obj = get_file_from_event(event)
         file_path = None
@@ -732,14 +777,36 @@ async def handle_message(event):
                     text="Прикрепите фото/документ или напишите «Пропустить».")
                 return
 
+        # 1) Сохраняем в БД для админ-панели MAX
         app_id = save_application(user_id_str, data, data.get('file_path'))
         clear_user_state(user_id_str)
         await bot.send_message(chat_id=chat_id, text="✅ Заявка отправлена на модерацию!")
 
+        # 2) Отправляем письмо на почту
+        email_body = (
+            f"Новая заявка #{app_id}\n\n"
+            f"ФИО / роль: {data.get('full_name', '—')}\n"
+            f"Что сделано: {data.get('action_desc', '—')}\n"
+            f"Польза: {data.get('benefit', '—')}\n"
+            f"Как пришёл: {data.get('how_came', '—')}\n"
+            f"Место и время: {data.get('place_time', '—')}\n"
+            f"Комментарий: {data.get('content', '—')}\n\n"
+            f"ID пользователя: {user_id_str}\n"
+            f"Статус: {status_ru('pending')}\n"
+            f"Создано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        send_email_with_attachment(
+            f"Заявка #{app_id} из бота MAX",
+            email_body,
+            data.get('file_path')
+        )
+
+        # 3) Уведомляем админов в MAX
         admin_note = (
             f"📢 Новая заявка #{app_id}\n"
             f"От: {data.get('full_name', '—')}\n"
             f"Статус: {status_ru('pending')}\n\n"
+            f"📩 Копия отправлена на почту.\n"
             f"Просмотр: /view {app_id}\n"
             f"Решение: /approve {app_id} или /reject {app_id}"
         )
@@ -776,7 +843,7 @@ async def handle_message(event):
         return
 
 # =========================================================
-# 15. ЗАПУСК
+# 16. ЗАПУСК
 # =========================================================
 async def main():
     logger.info("🚀 Бот запущен...")
