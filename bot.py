@@ -67,21 +67,25 @@ STATUS_RU = {
 def status_ru(status):
     return STATUS_RU.get(status, status)
 
+def file_kind(path):
+    if not path:
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
+        return 'фото'
+    if ext in ('.mp4', '.mov', '.avi', '.mkv', '.webm'):
+        return 'видео'
+    return 'документ'
+
 # =========================================================
 # 3.1. КНОПКИ (inline keyboard MAX Bot API)
 # =========================================================
 def kb(rows):
-    """
-    rows: [[{"text": "...", "payload": "..."}], ...]
-    Возвращает Pydantic-модель вложения inline_keyboard.
-    """
     buttons = []
     for row in rows:
         btn_row = []
         for b in row:
-            btn_row.append(
-                CallbackButton(text=b["text"], payload=b["payload"])
-            )
+            btn_row.append(CallbackButton(text=b["text"], payload=b["payload"]))
         buttons.append(btn_row)
     return ButtonsPayload(buttons=buttons).pack()
 
@@ -105,6 +109,7 @@ def application_actions_kb(app_id, with_view=True):
         {"text": "✅ Одобрить", "payload": f"approve:{app_id}"},
         {"text": "❌ Отклонить", "payload": f"reject:{app_id}"},
     ])
+    rows.append([{"text": "🏠 Меню", "payload": "cmd:menu"}])
     return kb(rows)
 
 def applications_list_kb(apps):
@@ -118,6 +123,7 @@ def applications_list_kb(apps):
             {"text": "✅", "payload": f"approve:{app_id}"},
             {"text": "❌", "payload": f"reject:{app_id}"},
         ])
+    rows.append([{"text": "🏠 Меню", "payload": "cmd:menu"}])
     return kb(rows)
 
 def admin_panel_kb():
@@ -130,6 +136,7 @@ def admin_panel_kb():
             {"text": "📋 Все заявки", "payload": "cmd:list"},
         ],
         [
+            {"text": "🏠 Меню", "payload": "cmd:menu"},
             {"text": "🔒 Выйти", "payload": "cmd:logout"},
         ],
     ])
@@ -444,31 +451,63 @@ def get_file_from_event(event):
     return None
 
 def save_file(file_obj):
-    name = getattr(file_obj, 'filename', None) or getattr(file_obj, 'name', None) or getattr(file_obj, 'file_name', None) or 'file'
+    name = (getattr(file_obj, 'filename', None) or getattr(file_obj, 'name', None)
+            or getattr(file_obj, 'file_name', None) or 'file')
     ext = name.split('.')[-1] if '.' in name else ''
     filename = f"{uuid.uuid4().hex}.{ext}" if ext else f"{uuid.uuid4().hex}"
     file_path = os.path.join(UPLOAD_DIR, filename)
 
+    logger.info(f"📥 save_file: type={type(file_obj).__name__}, name={name}")
+
+    # Попытка 1: метод download()
     if hasattr(file_obj, 'download'):
         try:
             file_obj.download(file_path)
-            if os.path.exists(file_path):
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                logger.info(f"✅ Файл сохранён через download(): {file_path}")
                 return file_path
         except Exception as e:
-            logger.error(f"Ошибка download: {e}")
+            logger.error(f"download() не сработал: {e}")
 
-    if hasattr(file_obj, 'payload') and hasattr(file_obj.payload, 'url'):
-        url = file_obj.payload.url
-        try:
-            ctx = ssl._create_unverified_context()
-            with urllib.request.urlopen(url, context=ctx) as response:
-                with open(file_path, 'wb') as f:
-                    f.write(response.read())
-            return file_path
-        except Exception as e:
-            logger.error(f"Ошибка скачивания по URL: {e}")
+    # Попытка 2: скачать по URL из payload
+    payload = getattr(file_obj, 'payload', None)
+    if payload:
+        logger.info(f"   payload={payload!r}")
+        for url_attr in ('url', 'file_url', 'download_url', 'src'):
+            url = getattr(payload, url_attr, None)
+            if url:
+                try:
+                    ctx = ssl._create_unverified_context()
+                    req = urllib.request.Request(url, headers={"Authorization": TOKEN})
+                    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+                        with open(file_path, 'wb') as f:
+                            f.write(r.read())
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        logger.info(f"✅ Файл сохранён по payload.{url_attr}: {url}")
+                        return file_path
+                except Exception as e:
+                    logger.error(f"payload.{url_attr} — скачивание не удалось: {e}")
 
-    logger.warning(f"Файл не сохранён (name={name})")
+        # Попытка 3: скачать через API по file_id/photo_id/token
+        for id_attr in ('file_id', 'photo_id', 'video_id', 'token', 'id'):
+            file_id = getattr(payload, id_attr, None)
+            if not file_id:
+                continue
+            for url_tpl in (f"{API_BASE}/files/{file_id}",
+                            f"https://platform-api2.max.ru/files/{file_id}"):
+                try:
+                    ctx = ssl._create_unverified_context()
+                    req = urllib.request.Request(url_tpl, headers={"Authorization": TOKEN})
+                    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+                        with open(file_path, 'wb') as f:
+                            f.write(r.read())
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        logger.info(f"✅ Файл сохранён через {id_attr}={file_id}")
+                        return file_path
+                except Exception as e:
+                    logger.debug(f"  {url_tpl}: {e}")
+
+    logger.warning(f"❌ Файл не сохранён (name={name})")
     return None
 
 # =========================================================
@@ -485,6 +524,36 @@ async def _send(chat_id, text, attachments=None):
     if attachments:
         kwargs['attachments'] = attachments
     await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+async def try_send_file_to_chat(chat_id, file_path):
+    if not file_path or not os.path.exists(file_path):
+        return False
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
+        candidates = ['send_photo', 'send_image', 'send_file', 'send_document']
+    elif ext in ('.mp4', '.mov', '.avi', '.mkv', '.webm'):
+        candidates = ['send_video', 'send_file', 'send_document']
+    else:
+        candidates = ['send_document', 'send_file']
+
+    for method_name in candidates:
+        method = getattr(bot, method_name, None)
+        if method is None:
+            continue
+        for kw in ({'file': file_path}, {'path': file_path},
+                   {'file_path': file_path}, {'photo': file_path}, {'document': file_path}):
+            try:
+                await method(chat_id=chat_id, **kw)
+                logger.info(f"✅ Файл отправлен через {method_name} ({list(kw)})")
+                return True
+            except TypeError:
+                continue
+            except Exception as e:
+                logger.debug(f"  {method_name}({list(kw)}) — {e}")
+
+    logger.warning(f"⚠️ Не удалось отправить файл {file_path} — нет подходящего метода в maxapi")
+    return False
 
 async def send_greeting(chat_id, user_id=None):
     text = (
@@ -517,6 +586,11 @@ async def send_view(chat_id, app_id):
     if not app:
         await _send(chat_id, f"Заявка #{app_id} не найдена.")
         return
+
+    has_file = bool(app[8] and os.path.exists(app[8]))
+    kind = file_kind(app[8]) if has_file else None
+    file_line = f"📎 Вложение: {kind}" if has_file else "📎 Вложение: нет"
+
     text = (
         f"📄 Заявка #{app_id}\n\n"
         f"Пользователь: {app[2]}\n"
@@ -525,26 +599,26 @@ async def send_view(chat_id, app_id):
         f"Как пришёл: {app[5]}\n"
         f"Место и время: {app[6]}\n"
         f"Комментарий: {app[7] or '—'}\n"
+        f"{file_line}\n"
         f"Статус: {status_ru(app[9])}\n"
         f"Комментарий админа: {app[10] or '—'}\n"
         f"Создана: {app[11]}"
     )
+
     attachments = None
     if app[9] == 'pending':
         attachments = [application_actions_kb(app_id, with_view=False)]
+
     await _send(chat_id, text, attachments=attachments)
-    if app[8] and os.path.exists(app[8]):
-        try:
-            if hasattr(bot, 'send_file'):
-                await bot.send_file(chat_id=chat_id, file=app[8])
-        except Exception as e:
-            logger.error(f"Ошибка отправки файла: {e}")
+
+    if has_file:
+        await try_send_file_to_chat(chat_id, app[8])
 
 async def send_pending(chat_id):
     status = 'pending'
     total = count_filtered(status=status)
     if total == 0:
-        await _send(chat_id, "Заявок на модерации нет.")
+        await _send(chat_id, "Заявок на модерации нет.", attachments=[admin_panel_kb()])
         return
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
     rows = filter_applications(status=status, limit=PAGE_SIZE, offset=0)
@@ -556,7 +630,7 @@ async def send_pending(chat_id):
 async def send_list(chat_id, status=None, period=None, page=1):
     total = count_filtered(status=status, period=period)
     if total == 0:
-        await _send(chat_id, "Нет заявок по заданным фильтрам.")
+        await _send(chat_id, "Нет заявок по заданным фильтрам.", attachments=[admin_panel_kb()])
         return
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
     page = max(1, min(page, total_pages))
@@ -577,10 +651,11 @@ async def send_stats(chat_id):
         f"Всего: {total}\n"
         f"{status_ru('pending')}: {pending}\n"
         f"{status_ru('approved')}: {approved}\n"
-        f"{status_ru('rejected')}: {rejected}"
+        f"{status_ru('rejected')}: {rejected}",
+        attachments=[admin_panel_kb()]
     )
 
-async def apply_approve(chat_id, app_id, feedback=""):
+async def apply_approve(chat_id, app_id, feedback="", user_id=None):
     app = get_application_by_id(app_id)
     if not app:
         await _send(chat_id, f"Заявка #{app_id} не найдена.")
@@ -589,7 +664,11 @@ async def apply_approve(chat_id, app_id, feedback=""):
         await _send(chat_id, f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'approved', feedback)
-    await _send(chat_id, f"✅ Заявка #{app_id} одобрена.")
+    await _send(
+        chat_id,
+        f"✅ Заявка #{app_id} одобрена.",
+        attachments=[main_menu_kb(user_id)] if user_id else None
+    )
     try:
         await bot.send_message(
             chat_id=int(app[1]),
@@ -598,7 +677,7 @@ async def apply_approve(chat_id, app_id, feedback=""):
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя: {e}")
 
-async def apply_reject(chat_id, app_id, feedback=""):
+async def apply_reject(chat_id, app_id, feedback="", user_id=None):
     app = get_application_by_id(app_id)
     if not app:
         await _send(chat_id, f"Заявка #{app_id} не найдена.")
@@ -607,7 +686,11 @@ async def apply_reject(chat_id, app_id, feedback=""):
         await _send(chat_id, f"Заявка уже обработана ({status_ru(app[9])}).")
         return
     update_status(app_id, 'rejected', feedback)
-    await _send(chat_id, f"❌ Заявка #{app_id} отклонена.")
+    await _send(
+        chat_id,
+        f"❌ Заявка #{app_id} отклонена.",
+        attachments=[main_menu_kb(user_id)] if user_id else None
+    )
     try:
         await bot.send_message(
             chat_id=int(app[1]),
@@ -669,16 +752,20 @@ async def cmd_cancel(event):
         return
     if get_user_state(user_id) is not None:
         clear_user_state(user_id)
-        await _send(chat_id, "✅ Черновик заявки отменён.")
+        await _send(chat_id, "✅ Черновик заявки отменён.",
+                    attachments=[main_menu_kb(user_id)])
         return
     rows = get_applications_by_user(user_id)
     pending = [r for r in rows if r[9] == 'pending']
     if not pending:
-        await _send(chat_id, "Нет активной заявки для отмены.")
+        await _send(chat_id, "Нет активной заявки для отмены.",
+                    attachments=[main_menu_kb(user_id)])
         return
     last_id = pending[0][0]
     update_status(last_id, 'rejected', 'Отозвана автором')
-    await _send(chat_id, f"✅ Заявка #{last_id} отозвана.\nСтатус: {status_ru('rejected')}")
+    await _send(chat_id,
+                f"✅ Заявка #{last_id} отозвана.\nСтатус: {status_ru('rejected')}",
+                attachments=[main_menu_kb(user_id)])
 
 @dp.message_created(Command(commands=['news']))
 async def cmd_news(event):
@@ -718,9 +805,10 @@ async def cmd_mystatus(event):
         msg += "📌 Отозвать последнюю: /cancel"
         parts.append(msg)
     if not parts:
-        await _send(chat_id, "📭 У вас пока нет заявок.")
+        await _send(chat_id, "📭 У вас пока нет заявок.",
+                    attachments=[main_menu_kb(user_id)])
         return
-    await _send(chat_id, "\n\n".join(parts))
+    await _send(chat_id, "\n\n".join(parts), attachments=[main_menu_kb(user_id)])
 
 # =========================================================
 # 13. ВХОД / ВЫХОД
@@ -749,7 +837,8 @@ async def cmd_logout(event):
         return
     if user_id in admin_authenticated:
         admin_authenticated.discard(user_id)
-        await _send(chat_id, "🔒 Вы вышли из админ-панели.")
+        await _send(chat_id, "🔒 Вы вышли из админ-панели.",
+                    attachments=[main_menu_kb(user_id)])
     else:
         await _send(chat_id, "Вы не авторизованы.")
 
@@ -821,6 +910,7 @@ async def cmd_stats(event):
 @admin_required
 async def cmd_approve(event):
     chat_id = get_chat_id(event)
+    user_id = get_user_id(event)
     args = event.message.body.text.split(maxsplit=2)
     if len(args) < 2:
         await _send(chat_id, "Использование: /approve <id> [комментарий]")
@@ -831,12 +921,13 @@ async def cmd_approve(event):
         await _send(chat_id, "ID должен быть числом.")
         return
     feedback = args[2] if len(args) > 2 else ""
-    await apply_approve(chat_id, app_id, feedback)
+    await apply_approve(chat_id, app_id, feedback, user_id=user_id)
 
 @dp.message_created(Command(commands=['reject']))
 @admin_required
 async def cmd_reject(event):
     chat_id = get_chat_id(event)
+    user_id = get_user_id(event)
     args = event.message.body.text.split(maxsplit=2)
     if len(args) < 2:
         await _send(chat_id, "Использование: /reject <id> [комментарий]")
@@ -847,7 +938,7 @@ async def cmd_reject(event):
         await _send(chat_id, "ID должен быть числом.")
         return
     feedback = args[2] if len(args) > 2 else ""
-    await apply_reject(chat_id, app_id, feedback)
+    await apply_reject(chat_id, app_id, feedback, user_id=user_id)
 
 # =========================================================
 # 15. ОБРАБОТКА CALLBACK-КНОПОК
@@ -861,6 +952,11 @@ async def handle_callback(event):
 
     payload = get_callback_payload(event)
     if not payload:
+        return
+
+    # 🏠 Меню — работает всем и из любого места
+    if payload == "cmd:menu":
+        await send_greeting(chat_id, user_id)
         return
 
     # ---- Команды, доступные всем ----
@@ -886,7 +982,11 @@ async def handle_callback(event):
                 short = (r[3] or '')[:60] + ('...' if len(r[3] or '') > 60 else '')
                 msg += f"ID: {r[0]}\nТекст: {short}\nСтатус: {status_ru(r[9])}\n\n"
             parts.append(msg)
-        await _send(chat_id, "\n\n".join(parts) if parts else "📭 У вас пока нет заявок.")
+        await _send(
+            chat_id,
+            "\n\n".join(parts) if parts else "📭 У вас пока нет заявок.",
+            attachments=[main_menu_kb(user_id)]
+        )
         return
     if payload == "cmd:help":
         await _send(
@@ -922,13 +1022,14 @@ async def handle_callback(event):
         await send_list(chat_id)
     elif payload == "cmd:logout":
         admin_authenticated.discard(user_id)
-        await _send(chat_id, "🔒 Вы вышли из админ-панели.")
+        await _send(chat_id, "🔒 Вы вышли из админ-панели.",
+                    attachments=[main_menu_kb(user_id)])
     elif payload.startswith("view:"):
         await send_view(chat_id, int(payload.split(":", 1)[1]))
     elif payload.startswith("approve:"):
-        await apply_approve(chat_id, int(payload.split(":", 1)[1]))
+        await apply_approve(chat_id, int(payload.split(":", 1)[1]), user_id=user_id)
     elif payload.startswith("reject:"):
-        await apply_reject(chat_id, int(payload.split(":", 1)[1]))
+        await apply_reject(chat_id, int(payload.split(":", 1)[1]), user_id=user_id)
 
 # =========================================================
 # 16. ОСНОВНОЙ ОБРАБОТЧИК
@@ -994,9 +1095,16 @@ async def handle_message(event):
                 await _send(chat_id, "Прикрепите фото/документ или напишите «Пропустить».")
                 return
 
-        app_id = save_application(user_id_str, data, data.get('file_path'))
+        saved_file = data.get('file_path')
+        app_id = save_application(user_id_str, data, saved_file)
         clear_user_state(user_id_str)
-        await _send(chat_id, "✅ Заявка отправлена на модерацию!")
+
+        # пользователю — подтверждение + меню-кнопки
+        await _send(
+            chat_id,
+            "✅ Заявка отправлена на модерацию!",
+            attachments=[main_menu_kb(user_id)]
+        )
 
         email_body = (
             f"Новая заявка #{app_id}\n\n"
@@ -1010,11 +1118,16 @@ async def handle_message(event):
             f"Статус: {status_ru('pending')}\n"
             f"Создано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        send_email_with_attachment(f"Заявка #{app_id} из бота MAX", email_body, data.get('file_path'))
+        send_email_with_attachment(f"Заявка #{app_id} из бота MAX", email_body, saved_file)
+
+        has_file = bool(saved_file and os.path.exists(saved_file))
+        kind = file_kind(saved_file) if has_file else None
+        file_line = f"📎 Вложение: {kind}" if has_file else "📎 Вложение: нет"
 
         admin_note = (
             f"📢 Новая заявка #{app_id}\n"
             f"От: {data.get('full_name', '—')}\n"
+            f"{file_line}\n"
             f"Статус: {status_ru('pending')}"
         )
         admin_kb = kb([
@@ -1023,12 +1136,15 @@ async def handle_message(event):
                 {"text": "✅ Одобрить", "payload": f"approve:{app_id}"},
                 {"text": "❌ Отклонить", "payload": f"reject:{app_id}"},
             ],
+            [{"text": "🏠 Меню", "payload": "cmd:menu"}],
         ])
         for admin_id in ADMIN_IDS:
             cid = admin_chat_ids.get(admin_id)
             if cid:
                 try:
                     await _send(cid, admin_note, attachments=[admin_kb])
+                    if has_file:
+                        await try_send_file_to_chat(cid, saved_file)
                 except Exception as e:
                     logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
         return
