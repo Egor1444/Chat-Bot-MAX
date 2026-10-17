@@ -55,13 +55,17 @@ admin_chat_ids = {}
 greeted_users = set()
 admin_authenticated = set()
 
+# Слова, которыми можно пропустить необязательный шаг
+SKIP_WORDS = {"пропустить", "пропуск", "skip", "—", "-", "нет"}
+
 # =========================================================
 # 3. СТАТУСЫ
 # =========================================================
 STATUS_RU = {
-    "pending":  "⏳ На модерации",
-    "approved": "✅ Одобрено",
-    "rejected": "❌ Отклонено",
+    "pending":   "⏳ На модерации",
+    "approved":  "✅ Одобрено",
+    "rejected":  "❌ Отклонено",
+    "cancelled": "🚫 Отозвано",
 }
 
 def status_ru(status):
@@ -78,7 +82,7 @@ def file_kind(path):
     return 'документ'
 
 # =========================================================
-# 3.1. КНОПКИ (inline keyboard MAX Bot API)
+# 3.1. КНОПКИ
 # =========================================================
 def kb(rows):
     buttons = []
@@ -100,6 +104,11 @@ def main_menu_kb(user_id):
     if is_admin(user_id):
         rows.append([{"text": "🔐 Админ-панель", "payload": "cmd:admin"}])
     return kb(rows)
+
+def file_step_kb():
+    return kb([
+        [{"text": "⏭ Пропустить", "payload": "cmd:skip_file"}],
+    ])
 
 def application_actions_kb(app_id, with_view=True):
     rows = []
@@ -287,12 +296,15 @@ def update_status(app_id, status, feedback=''):
 def get_stats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    total = c.execute('SELECT COUNT(*) FROM news').fetchone()[0]
-    pending = c.execute("SELECT COUNT(*) FROM news WHERE status = 'pending'").fetchone()[0]
-    approved = c.execute("SELECT COUNT(*) FROM news WHERE status = 'approved'").fetchone()[0]
-    rejected = c.execute("SELECT COUNT(*) FROM news WHERE status = 'rejected'").fetchone()[0]
+    result = {
+        'total':     c.execute('SELECT COUNT(*) FROM news').fetchone()[0],
+        'pending':   c.execute("SELECT COUNT(*) FROM news WHERE status = 'pending'").fetchone()[0],
+        'approved':  c.execute("SELECT COUNT(*) FROM news WHERE status = 'approved'").fetchone()[0],
+        'rejected':  c.execute("SELECT COUNT(*) FROM news WHERE status = 'rejected'").fetchone()[0],
+        'cancelled': c.execute("SELECT COUNT(*) FROM news WHERE status = 'cancelled'").fetchone()[0],
+    }
     conn.close()
-    return total, pending, approved, rejected
+    return result
 
 def _period_start(period):
     now = datetime.now()
@@ -363,12 +375,12 @@ def clear_user_state(user_id):
 # 8. ВОПРОСЫ
 # =========================================================
 QUESTIONS = [
-    ('full_name', 'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
+    ('full_name',   'Расскажите о себе: ваше полное имя, должность или роль в проекте.'),
     ('action_desc', 'Опишите событие или действие, о котором хотите сообщить. Что именно произошло?'),
-    ('benefit', 'Какую пользу или ценность эта новость принесёт аудитории?'),
-    ('how_came', 'Как вы пришли к этому? Какие обстоятельства или предпосылки к этому привели?'),
-    ('place_time', 'Где и когда произошло событие? Укажите место и дату (город, площадка, время).'),
-    ('content', 'Если хотите, добавьте комментарий или дополнительную информацию (можно пропустить, отправьте «—»).')
+    ('benefit',     'Какую пользу или ценность эта новость принесёт аудитории?'),
+    ('how_came',    'Как вы пришли к этому? Какие обстоятельства или предпосылки к этому привели?'),
+    ('place_time',  'Где и когда произошло событие? Укажите место и дату (город, площадка, время).'),
+    ('content',     'Если хотите, добавьте комментарий или дополнительную информацию (можно пропустить — отправьте «-»).')
 ]
 FILE_STEP = len(QUESTIONS)
 
@@ -459,7 +471,6 @@ def save_file(file_obj):
 
     logger.info(f"📥 save_file: type={type(file_obj).__name__}, name={name}")
 
-    # Попытка 1: метод download()
     if hasattr(file_obj, 'download'):
         try:
             file_obj.download(file_path)
@@ -469,7 +480,6 @@ def save_file(file_obj):
         except Exception as e:
             logger.error(f"download() не сработал: {e}")
 
-    # Попытка 2: скачать по URL из payload
     payload = getattr(file_obj, 'payload', None)
     if payload:
         logger.info(f"   payload={payload!r}")
@@ -488,7 +498,6 @@ def save_file(file_obj):
                 except Exception as e:
                     logger.error(f"payload.{url_attr} — скачивание не удалось: {e}")
 
-        # Попытка 3: скачать через API по file_id/photo_id/token
         for id_attr in ('file_id', 'photo_id', 'video_id', 'token', 'id'):
             file_id = getattr(payload, id_attr, None)
             if not file_id:
@@ -552,8 +561,63 @@ async def try_send_file_to_chat(chat_id, file_path):
             except Exception as e:
                 logger.debug(f"  {method_name}({list(kw)}) — {e}")
 
-    logger.warning(f"⚠️ Не удалось отправить файл {file_path} — нет подходящего метода в maxapi")
+    logger.warning(f"⚠️ Не удалось отправить файл {file_path}")
     return False
+
+async def finalize_application(chat_id, user_id, data):
+    """Сохранение заявки + письмо + уведомление админам."""
+    user_id_str = str(user_id)
+    saved_file = data.get('file_path')
+    app_id = save_application(user_id_str, data, saved_file)
+    clear_user_state(user_id_str)
+
+    await _send(
+        chat_id,
+        "✅ Заявка отправлена на модерацию!",
+        attachments=[main_menu_kb(user_id)]
+    )
+
+    email_body = (
+        f"Новая заявка #{app_id}\n\n"
+        f"ФИО / роль: {data.get('full_name', '—')}\n"
+        f"Что сделано: {data.get('action_desc', '—')}\n"
+        f"Польза: {data.get('benefit', '—')}\n"
+        f"Как пришёл: {data.get('how_came', '—')}\n"
+        f"Место и время: {data.get('place_time', '—')}\n"
+        f"Комментарий: {data.get('content', '—')}\n\n"
+        f"ID пользователя: {user_id_str}\n"
+        f"Статус: {status_ru('pending')}\n"
+        f"Создано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    send_email_with_attachment(f"Заявка #{app_id} из бота MAX", email_body, saved_file)
+
+    has_file = bool(saved_file and os.path.exists(saved_file))
+    kind = file_kind(saved_file) if has_file else None
+    file_line = f"📎 Вложение: {kind}" if has_file else "📎 Вложение: нет"
+
+    admin_note = (
+        f"📢 Новая заявка #{app_id}\n"
+        f"От: {data.get('full_name', '—')}\n"
+        f"{file_line}\n"
+        f"Статус: {status_ru('pending')}"
+    )
+    admin_kb = kb([
+        [{"text": f"📄 Просмотр #{app_id}", "payload": f"view:{app_id}"}],
+        [
+            {"text": "✅ Одобрить", "payload": f"approve:{app_id}"},
+            {"text": "❌ Отклонить", "payload": f"reject:{app_id}"},
+        ],
+        [{"text": "🏠 Меню", "payload": "cmd:menu"}],
+    ])
+    for admin_id in ADMIN_IDS:
+        cid = admin_chat_ids.get(admin_id)
+        if cid:
+            try:
+                await _send(cid, admin_note, attachments=[admin_kb])
+                if has_file:
+                    await try_send_file_to_chat(cid, saved_file)
+            except Exception as e:
+                logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
 
 async def send_greeting(chat_id, user_id=None):
     text = (
@@ -644,14 +708,15 @@ async def send_list(chat_id, status=None, period=None, page=1):
     await _send(chat_id, msg, attachments=[applications_list_kb(rows)])
 
 async def send_stats(chat_id):
-    total, pending, approved, rejected = get_stats()
+    s = get_stats()
     await _send(
         chat_id,
         f"📊 Статистика:\n"
-        f"Всего: {total}\n"
-        f"{status_ru('pending')}: {pending}\n"
-        f"{status_ru('approved')}: {approved}\n"
-        f"{status_ru('rejected')}: {rejected}",
+        f"Всего: {s['total']}\n"
+        f"{status_ru('pending')}: {s['pending']}\n"
+        f"{status_ru('approved')}: {s['approved']}\n"
+        f"{status_ru('rejected')}: {s['rejected']}\n"
+        f"{status_ru('cancelled')}: {s['cancelled']}",
         attachments=[admin_panel_kb()]
     )
 
@@ -762,9 +827,9 @@ async def cmd_cancel(event):
                     attachments=[main_menu_kb(user_id)])
         return
     last_id = pending[0][0]
-    update_status(last_id, 'rejected', 'Отозвана автором')
+    update_status(last_id, 'cancelled', 'Отозвана автором')
     await _send(chat_id,
-                f"✅ Заявка #{last_id} отозвана.\nСтатус: {status_ru('rejected')}",
+                f"🚫 Заявка #{last_id} отозвана.\nСтатус: {status_ru('cancelled')}",
                 attachments=[main_menu_kb(user_id)])
 
 @dp.message_created(Command(commands=['news']))
@@ -871,7 +936,7 @@ async def cmd_list(event):
     page = 1
     for a in args[1:]:
         a_lower = a.lower()
-        if a_lower in ('pending', 'approved', 'rejected', 'all'):
+        if a_lower in ('pending', 'approved', 'rejected', 'cancelled', 'all'):
             status = None if a_lower == 'all' else a_lower
         elif a_lower in ('today', 'week', 'month', 'all'):
             period = None if a_lower == 'all' else a_lower
@@ -941,7 +1006,7 @@ async def cmd_reject(event):
     await apply_reject(chat_id, app_id, feedback, user_id=user_id)
 
 # =========================================================
-# 15. ОБРАБОТКА CALLBACK-КНОПОК
+# 15. CALLBACK-КНОПКИ
 # =========================================================
 @dp.message_callback()
 async def handle_callback(event):
@@ -954,7 +1019,7 @@ async def handle_callback(event):
     if not payload:
         return
 
-    # 🏠 Меню — работает всем и из любого места
+    # 🏠 Меню — всем и из любого места
     if payload == "cmd:menu":
         await send_greeting(chat_id, user_id)
         return
@@ -964,6 +1029,15 @@ async def handle_callback(event):
         clear_user_state(user_id)
         set_user_state(user_id, 0)
         await _send(chat_id, QUESTIONS[0][1])
+        return
+    if payload == "cmd:skip_file":
+        state = get_user_state(user_id)
+        if state is None or state['step'] != FILE_STEP:
+            await _send(chat_id, "Нет активной заявки для пропуска файла.",
+                        attachments=[main_menu_kb(user_id)])
+            return
+        state['data']['file_path'] = None
+        await finalize_application(chat_id, user_id, state['data'])
         return
     if payload == "cmd:mystatus":
         state = get_user_state(user_id)
@@ -1089,64 +1163,18 @@ async def handle_message(event):
                 await _send(chat_id, "Не удалось сохранить файл.")
                 return
         else:
-            if raw_text and raw_text.lower() in ("пропустить", "—"):
+            if raw_text and raw_text.lower() in SKIP_WORDS:
                 data['file_path'] = None
             else:
-                await _send(chat_id, "Прикрепите фото/документ или напишите «Пропустить».")
+                await _send(
+                    chat_id,
+                    "Прикрепите фото/документ или нажмите «⏭ Пропустить».\n"
+                    "Можно также написать «-» или «пропустить».",
+                    attachments=[file_step_kb()]
+                )
                 return
 
-        saved_file = data.get('file_path')
-        app_id = save_application(user_id_str, data, saved_file)
-        clear_user_state(user_id_str)
-
-        # пользователю — подтверждение + меню-кнопки
-        await _send(
-            chat_id,
-            "✅ Заявка отправлена на модерацию!",
-            attachments=[main_menu_kb(user_id)]
-        )
-
-        email_body = (
-            f"Новая заявка #{app_id}\n\n"
-            f"ФИО / роль: {data.get('full_name', '—')}\n"
-            f"Что сделано: {data.get('action_desc', '—')}\n"
-            f"Польза: {data.get('benefit', '—')}\n"
-            f"Как пришёл: {data.get('how_came', '—')}\n"
-            f"Место и время: {data.get('place_time', '—')}\n"
-            f"Комментарий: {data.get('content', '—')}\n\n"
-            f"ID пользователя: {user_id_str}\n"
-            f"Статус: {status_ru('pending')}\n"
-            f"Создано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        send_email_with_attachment(f"Заявка #{app_id} из бота MAX", email_body, saved_file)
-
-        has_file = bool(saved_file and os.path.exists(saved_file))
-        kind = file_kind(saved_file) if has_file else None
-        file_line = f"📎 Вложение: {kind}" if has_file else "📎 Вложение: нет"
-
-        admin_note = (
-            f"📢 Новая заявка #{app_id}\n"
-            f"От: {data.get('full_name', '—')}\n"
-            f"{file_line}\n"
-            f"Статус: {status_ru('pending')}"
-        )
-        admin_kb = kb([
-            [{"text": f"📄 Просмотр #{app_id}", "payload": f"view:{app_id}"}],
-            [
-                {"text": "✅ Одобрить", "payload": f"approve:{app_id}"},
-                {"text": "❌ Отклонить", "payload": f"reject:{app_id}"},
-            ],
-            [{"text": "🏠 Меню", "payload": "cmd:menu"}],
-        ])
-        for admin_id in ADMIN_IDS:
-            cid = admin_chat_ids.get(admin_id)
-            if cid:
-                try:
-                    await _send(cid, admin_note, attachments=[admin_kb])
-                    if has_file:
-                        await try_send_file_to_chat(cid, saved_file)
-                except Exception as e:
-                    logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+        await finalize_application(chat_id, user_id, data)
         return
 
     # Основные вопросы
@@ -1154,7 +1182,8 @@ async def handle_message(event):
         if not raw_text:
             await _send(chat_id, "Отправьте текстовое сообщение.")
             return
-        if step == 5 and raw_text == "—":
+        # Пропуск комментария на последнем вопросе
+        if step == 5 and raw_text.lower() in SKIP_WORDS:
             raw_text = ""
         field = QUESTIONS[step][0]
         data[field] = raw_text
@@ -1164,7 +1193,11 @@ async def handle_message(event):
             await _send(chat_id, QUESTIONS[next_step][1])
         else:
             set_user_state(user_id_str, FILE_STEP, data)
-            await _send(chat_id, "Прикрепите фото/документ или напишите «Пропустить».")
+            await _send(
+                chat_id,
+                "Прикрепите фото/документ или нажмите «⏭ Пропустить».",
+                attachments=[file_step_kb()]
+            )
         return
 
 # =========================================================
