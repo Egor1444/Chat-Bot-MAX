@@ -14,6 +14,7 @@ from email import encoders
 from datetime import datetime, timedelta
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart, Command
+from maxapi.types import ButtonsPayload, CallbackButton
 
 # =========================================================
 # 1. ЛОГИРОВАНИЕ
@@ -72,20 +73,17 @@ def status_ru(status):
 def kb(rows):
     """
     rows: [[{"text": "...", "payload": "..."}], ...]
-    Возвращает вложение inline_keyboard.
+    Возвращает Pydantic-модель вложения inline_keyboard.
     """
-    return {
-        "type": "inline_keyboard",
-        "payload": {
-            "buttons": [
-                [
-                    {"type": "callback", "text": b["text"], "payload": b["payload"]}
-                    for b in row
-                ]
-                for row in rows
-            ]
-        }
-    }
+    buttons = []
+    for row in rows:
+        btn_row = []
+        for b in row:
+            btn_row.append(
+                CallbackButton(text=b["text"], payload=b["payload"])
+            )
+        buttons.append(btn_row)
+    return ButtonsPayload(buttons=buttons).pack()
 
 def main_menu_kb(user_id):
     rows = [
@@ -110,7 +108,6 @@ def application_actions_kb(app_id, with_view=True):
     return kb(rows)
 
 def applications_list_kb(apps):
-    """apps: список кортежей с [0]=id"""
     if not apps:
         return None
     rows = []
@@ -873,7 +870,6 @@ async def handle_callback(event):
         await _send(chat_id, QUESTIONS[0][1])
         return
     if payload == "cmd:mystatus":
-        # переиспользуем логику cmd_mystatus через прямое построение
         state = get_user_state(user_id)
         rows = get_applications_by_user(user_id)
         parts = []
