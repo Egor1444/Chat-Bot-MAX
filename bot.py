@@ -55,7 +55,6 @@ admin_chat_ids = {}
 greeted_users = set()
 admin_authenticated = set()
 
-# Слова, которыми можно пропустить необязательный шаг
 SKIP_WORDS = {"пропустить", "пропуск", "skip", "—", "-", "нет"}
 
 # =========================================================
@@ -104,6 +103,11 @@ def main_menu_kb(user_id):
     if is_admin(user_id):
         rows.append([{"text": "🔐 Админ-панель", "payload": "cmd:admin"}])
     return kb(rows)
+
+def comment_step_kb():
+    return kb([
+        [{"text": "⏭ Пропустить", "payload": "cmd:skip_comment"}],
+    ])
 
 def file_step_kb():
     return kb([
@@ -380,7 +384,7 @@ QUESTIONS = [
     ('benefit',     'Какую пользу или ценность эта новость принесёт аудитории?'),
     ('how_came',    'Как вы пришли к этому? Какие обстоятельства или предпосылки к этому привели?'),
     ('place_time',  'Где и когда произошло событие? Укажите место и дату (город, площадка, время).'),
-    ('content',     'Если хотите, добавьте комментарий или дополнительную информацию (можно пропустить — отправьте «-»).')
+    ('content',     'Если хотите, добавьте комментарий или дополнительную информацию (можно пропустить — отправьте «-» или нажмите «⏭ Пропустить»).')
 ]
 FILE_STEP = len(QUESTIONS)
 
@@ -565,7 +569,6 @@ async def try_send_file_to_chat(chat_id, file_path):
     return False
 
 async def finalize_application(chat_id, user_id, data):
-    """Сохранение заявки + письмо + уведомление админам."""
     user_id_str = str(user_id)
     saved_file = data.get('file_path')
     app_id = save_application(user_id_str, data, saved_file)
@@ -1030,6 +1033,20 @@ async def handle_callback(event):
         set_user_state(user_id, 0)
         await _send(chat_id, QUESTIONS[0][1])
         return
+    if payload == "cmd:skip_comment":
+        state = get_user_state(user_id)
+        if state is None or state['step'] != 5:
+            await _send(chat_id, "Сейчас нет активного шага для пропуска комментария.",
+                        attachments=[main_menu_kb(user_id)])
+            return
+        state['data']['content'] = ""
+        set_user_state(user_id, FILE_STEP, state['data'])
+        await _send(
+            chat_id,
+            "Прикрепите фото/документ или нажмите «⏭ Пропустить».",
+            attachments=[file_step_kb()]
+        )
+        return
     if payload == "cmd:skip_file":
         state = get_user_state(user_id)
         if state is None or state['step'] != FILE_STEP:
@@ -1190,7 +1207,14 @@ async def handle_message(event):
         next_step = step + 1
         if next_step < FILE_STEP:
             set_user_state(user_id_str, next_step, data)
-            await _send(chat_id, QUESTIONS[next_step][1])
+            if next_step == 5:
+                await _send(
+                    chat_id,
+                    QUESTIONS[next_step][1],
+                    attachments=[comment_step_kb()]
+                )
+            else:
+                await _send(chat_id, QUESTIONS[next_step][1])
         else:
             set_user_state(user_id_str, FILE_STEP, data)
             await _send(
